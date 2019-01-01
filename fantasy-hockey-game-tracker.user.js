@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.3
+// @version      0.4
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        http://fantasy.espn.com/hockey/boxscore*
@@ -31,24 +31,37 @@
         let options = document.querySelectorAll('.matchup-nav-section > div select > option');
         if (options.length > 0) {
             clearInterval(interval);
+
+            let {groups: {awayGoaliePlayed, awayGoalieTotal}} = /(?<awayGoaliePlayed>\d+)\/(?<awayGoalieTotal>\d+)/.exec(document.querySelector('div.away-team > div.team-limits > table:nth-child(1) > tr:nth-child(1) > td:nth-child(2)').innerText);
+            let {groups: {awaySkaterPlayed, awaySkaterTotal}} = /(?<awaySkaterPlayed>\d+)\/(?<awaySkaterTotal>\d+)/.exec(document.querySelector('div.away-team > div.team-limits > table:nth-child(1) > tr:nth-child(2) > td:nth-child(2)').innerText);
+            let {groups: {homeGoaliePlayed, homeGoalieTotal}} = /(?<homeGoaliePlayed>\d+)\/(?<homeGoalieTotal>\d+)/.exec(document.querySelector('div.home-team > div.team-limits > table:nth-child(1) > tr:nth-child(1) > td:nth-child(2)').innerText);
+            let {groups: {homeSkaterPlayed, homeSkaterTotal}} = /(?<homeSkaterPlayed>\d+)\/(?<homeSkaterTotal>\d+)/.exec(document.querySelector('div.home-team > div.team-limits > table:nth-child(1) > tr:nth-child(2) > td:nth-child(2)').innerText);
+
+            let awayRow4 = document.querySelector('div.away-team > div.team-limits > table').insertRow(-1);
+            awayRow4.insertCell(-1);
+            let awayDataCell4 = awayRow4.insertCell(-1);
+            awayDataCell4.innerHTML = "Goalie games left: " + (awayGoalieTotal - awayGoaliePlayed);
+
+            let awayRow3 = document.querySelector('div.away-team > div.team-limits > table').insertRow(-1);
+            awayRow3.insertCell(-1);
+            let awayDataCell3 = awayRow3.insertCell(-1);
+            awayDataCell3.innerHTML = "Skater games left: " + (awaySkaterTotal - awaySkaterPlayed);
+
+            let homeRow4 = document.querySelector('div.home-team > div.team-limits > table').insertRow(-1);
+            homeRow4.insertCell(-1);
+            let homeDataCell4 = homeRow4.insertCell(-1);
+            homeDataCell4.innerHTML = "Goalie games left: " + (homeGoalieTotal - homeGoaliePlayed);
+
+            let homeRow3 = document.querySelector('div.home-team > div.team-limits > table').insertRow(-1);
+            homeRow3.insertCell(-1);
+            let homeDataCell3 = homeRow3.insertCell(-1);
+            homeDataCell3.innerHTML = "Skater games left: " + (homeSkaterTotal - homeSkaterPlayed);
+
             let scoringPeriods = [].slice.call(options).filter(item => item.value != "total" && item.value >= leagueData.status.latestScoringPeriod).map(item => item.value);
             let totalHomeSkaterGames = 0;
             let totalAwaySkaterGames = 0;
             let totalHomeGoalieGames = 0;
             let totalAwayGoalieGames = 0;
-
-            awaySkaters.forEach(skater => {
-                let skaterTeamGames = teamSchedules.find(team => team.id == skater.proTeamId).proGamesByScoringPeriod;
-                scoringPeriods.forEach(period => {
-                    if (skaterTeamGames[period]) {
-                        totalAwaySkaterGames++;
-                    }
-                });
-            });
-            let awayRow = document.querySelector('div.away-team > div.team-limits > table').insertRow(-1);
-            awayRow.insertCell(-1);
-            let awayDataCell = awayRow.insertCell(-1);
-            awayDataCell.innerHTML = "Potential skater games left: " + totalAwaySkaterGames;
 
             awayGoalies.forEach(goalie => {
                 let goalieTeamGames = teamSchedules.find(team => team.id == goalie.proTeamId).proGamesByScoringPeriod;
@@ -63,18 +76,18 @@
             let awayDataCell2 = awayRow2.insertCell(-1);
             awayDataCell2.innerHTML = "Potential goalie games left: " + totalAwayGoalieGames;
 
-            homeSkaters.forEach(skater => {
+            awaySkaters.forEach(skater => {
                 let skaterTeamGames = teamSchedules.find(team => team.id == skater.proTeamId).proGamesByScoringPeriod;
                 scoringPeriods.forEach(period => {
                     if (skaterTeamGames[period]) {
-                        totalHomeSkaterGames++;
+                        totalAwaySkaterGames++;
                     }
                 });
             });
-            let homeRow = document.querySelector('div.home-team > div.team-limits > table').insertRow(-1);
-            homeRow.insertCell(-1);
-            let homeDataCell = homeRow.insertCell(-1);
-            homeDataCell.innerHTML = "Potential skater games left: " + totalHomeSkaterGames;
+            let awayRow = document.querySelector('div.away-team > div.team-limits > table').insertRow(-1);
+            awayRow.insertCell(-1);
+            let awayDataCell = awayRow.insertCell(-1);
+            awayDataCell.innerHTML = "Potential skater games left: " + totalAwaySkaterGames;
 
             homeGoalies.forEach(goalie => {
                 let goalieTeamGames = teamSchedules.find(team => team.id == goalie.proTeamId).proGamesByScoringPeriod;
@@ -88,6 +101,19 @@
             homeRow2.insertCell(-1);
             let homeDataCell2 = homeRow2.insertCell(-1);
             homeDataCell2.innerHTML = "Potential goalie games left: " + totalHomeGoalieGames;
+
+            homeSkaters.forEach(skater => {
+                let skaterTeamGames = teamSchedules.find(team => team.id == skater.proTeamId).proGamesByScoringPeriod;
+                scoringPeriods.forEach(period => {
+                    if (skaterTeamGames[period]) {
+                        totalHomeSkaterGames++;
+                    }
+                });
+            });
+            let homeRow = document.querySelector('div.home-team > div.team-limits > table').insertRow(-1);
+            homeRow.insertCell(-1);
+            let homeDataCell = homeRow.insertCell(-1);
+            homeDataCell.innerHTML = "Potential skater games left: " + totalHomeSkaterGames;
         }
     }, 1000);
 })();
