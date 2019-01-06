@@ -108,36 +108,16 @@
         ).innerText
       );
 
-      let awayRow4 = document
-        .querySelector("div.away-team > div.team-limits > table")
-        .insertRow(-1);
-      awayRow4.insertCell(-1);
-      let awayDataCell4 = awayRow4.insertCell(-1);
-      awayDataCell4.innerHTML =
+      getNewLimitsCell("away").innerHTML =
         "Goalie games left: " + (awayGoalieTotal - awayGoaliePlayed);
 
-      let awayRow3 = document
-        .querySelector("div.away-team > div.team-limits > table")
-        .insertRow(-1);
-      awayRow3.insertCell(-1);
-      let awayDataCell3 = awayRow3.insertCell(-1);
-      awayDataCell3.innerHTML =
+      getNewLimitsCell("away").innerHTML =
         "Skater games left: " + (awaySkaterTotal - awaySkaterPlayed);
 
-      let homeRow4 = document
-        .querySelector("div.home-team > div.team-limits > table")
-        .insertRow(-1);
-      homeRow4.insertCell(-1);
-      let homeDataCell4 = homeRow4.insertCell(-1);
-      homeDataCell4.innerHTML =
+      getNewLimitsCell("home").innerHTML =
         "Goalie games left: " + (homeGoalieTotal - homeGoaliePlayed);
 
-      let homeRow3 = document
-        .querySelector("div.home-team > div.team-limits > table")
-        .insertRow(-1);
-      homeRow3.insertCell(-1);
-      let homeDataCell3 = homeRow3.insertCell(-1);
-      homeDataCell3.innerHTML =
+      getNewLimitsCell("home").innerHTML =
         "Skater games left: " + (homeSkaterTotal - homeSkaterPlayed);
 
       let scoringPeriods = [].slice
@@ -163,12 +143,8 @@
           }
         });
       });
-      let awayRow2 = document
-        .querySelector("div.away-team > div.team-limits > table")
-        .insertRow(-1);
-      awayRow2.insertCell(-1);
-      let awayDataCell2 = awayRow2.insertCell(-1);
-      awayDataCell2.innerHTML =
+
+      getNewLimitsCell("away").innerHTML =
         "Potential goalie games left: " + totalAwayGoalieGames;
 
       awaySkaters.forEach(skater => {
@@ -181,12 +157,8 @@
           }
         });
       });
-      let awayRow = document
-        .querySelector("div.away-team > div.team-limits > table")
-        .insertRow(-1);
-      awayRow.insertCell(-1);
-      let awayDataCell = awayRow.insertCell(-1);
-      awayDataCell.innerHTML =
+
+      getNewLimitsCell("away").innerHTML =
         "Potential skater games left: " + totalAwaySkaterGames;
 
       homeGoalies.forEach(goalie => {
@@ -199,12 +171,8 @@
           }
         });
       });
-      let homeRow2 = document
-        .querySelector("div.home-team > div.team-limits > table")
-        .insertRow(-1);
-      homeRow2.insertCell(-1);
-      let homeDataCell2 = homeRow2.insertCell(-1);
-      homeDataCell2.innerHTML =
+
+      getNewLimitsCell("home").innerHTML =
         "Potential goalie games left: " + totalHomeGoalieGames;
 
       homeSkaters.forEach(skater => {
@@ -217,12 +185,8 @@
           }
         });
       });
-      let homeRow = document
-        .querySelector("div.home-team > div.team-limits > table")
-        .insertRow(-1);
-      homeRow.insertCell(-1);
-      let homeDataCell = homeRow.insertCell(-1);
-      homeDataCell.innerHTML =
+
+      getNewLimitsCell("home").innerHTML =
         "Potential skater games left: " + totalHomeSkaterGames;
     }
   }, 1000);
@@ -240,4 +204,12 @@ function findGetParameter(parameterName) {
       if (tmp[0] === parameterName) result = decodeURIComponent(tmp[1]);
     });
   return result;
+}
+
+function getNewLimitsCell(location) {
+  let row = document
+    .querySelector(`div.${location}-team > div.team-limits > table`)
+    .insertRow(-1);
+  row.insertCell(-1);
+  return row.insertCell(-1);
 }
