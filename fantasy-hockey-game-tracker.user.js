@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.4
+// @version      0.5
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        http://fantasy.espn.com/hockey/boxscore*
@@ -25,7 +25,7 @@
   let currentMatchupPeriod = leagueData.status.currentMatchupPeriod;
   let matchup = leagueData.schedule.find(
     item =>
-      (item.home.teamId == teamId || item.away.teamId == teamId) &&
+      (item.home && item.home.teamId == teamId || item.away && item.away.teamId == teamId) &&
       item.matchupPeriodId == currentMatchupPeriod
   );
   let awaySkaters = matchup.away.rosterForCurrentScoringPeriod.entries
