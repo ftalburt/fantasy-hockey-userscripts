@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.5.2
+// @version      0.5.3
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -80,30 +80,22 @@
     if (options.length > 0) {
       clearInterval(interval);
 
-      let {
-        groups: { awayGoaliePlayed, awayGoalieTotal }
-      } = /(?<awayGoaliePlayed>\d+)\/(?<awayGoalieTotal>\d+)/.exec(
+      let [, awayGoaliePlayed, awayGoalieTotal] = /(\d+)\/(\d+)/.exec(
         document.querySelector(
           "div.away-team > div.team-limits > table:nth-child(1) > tr:nth-child(1) > td:nth-child(2)"
         ).innerText
       );
-      let {
-        groups: { awaySkaterPlayed, awaySkaterTotal }
-      } = /(?<awaySkaterPlayed>\d+)\/(?<awaySkaterTotal>\d+)/.exec(
+      let [, awaySkaterPlayed, awaySkaterTotal] = /(\d+)\/(\d+)/.exec(
         document.querySelector(
           "div.away-team > div.team-limits > table:nth-child(1) > tr:nth-child(2) > td:nth-child(2)"
         ).innerText
       );
-      let {
-        groups: { homeGoaliePlayed, homeGoalieTotal }
-      } = /(?<homeGoaliePlayed>\d+)\/(?<homeGoalieTotal>\d+)/.exec(
+      let [, homeGoaliePlayed, homeGoalieTotal] = /(\d+)\/(\d+)/.exec(
         document.querySelector(
           "div.home-team > div.team-limits > table:nth-child(1) > tr:nth-child(1) > td:nth-child(2)"
         ).innerText
       );
-      let {
-        groups: { homeSkaterPlayed, homeSkaterTotal }
-      } = /(?<homeSkaterPlayed>\d+)\/(?<homeSkaterTotal>\d+)/.exec(
+      let [, homeSkaterPlayed, homeSkaterTotal] = /(\d+)\/(\d+)/.exec(
         document.querySelector(
           "div.home-team > div.team-limits > table:nth-child(1) > tr:nth-child(2) > td:nth-child(2)"
         ).innerText
