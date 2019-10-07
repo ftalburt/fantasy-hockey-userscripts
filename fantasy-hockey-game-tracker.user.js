@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.5.1
+// @version      0.5.2
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
-// @match        http://fantasy.espn.com/hockey/boxscore*
+// @match        https://fantasy.espn.com/hockey/boxscore*
 // @grant        none
 // @require      https://unpkg.com/axios/dist/axios.min.js
 // ==/UserScript==
@@ -16,10 +16,10 @@
 
   let [leagueData, scheduleData] = (await Promise.all([
     axios.get(
-      `http://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mBoxscore&view=mMatchupScore&view=mSchedule&view=mScoreboard&view=mSettings&view=mStatus&view=mTeam&view=mRoster&view=modular&view=mNav`
+      `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mBoxscore&view=mMatchupScore&view=mSchedule&view=mScoreboard&view=mSettings&view=mStatus&view=mTeam&view=mRoster&view=modular&view=mNav`
     ),
     axios.get(
-      `http://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/?view=proTeamSchedules`
+      `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/?view=proTeamSchedules`
     )
   ])).map(response => response.data);
   let currentMatchupPeriod = leagueData.status.currentMatchupPeriod;
