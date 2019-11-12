@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.6.0
+// @version      0.7.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -14,14 +14,16 @@
   let leagueId = findGetParameter("leagueId");
   let seasonId = findGetParameter("seasonId");
 
-  let [leagueData, scheduleData] = (await Promise.all([
-    axios.get(
-      `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mBoxscore&view=mMatchupScore&view=mSchedule&view=mScoreboard&view=mSettings&view=mStatus&view=mTeam&view=mRoster&view=modular&view=mNav`
-    ),
-    axios.get(
-      `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/?view=proTeamSchedules`
-    )
-  ])).map(response => response.data);
+  let [leagueData, scheduleData] = (
+    await Promise.all([
+      axios.get(
+        `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mBoxscore&view=mMatchupScore&view=mSchedule&view=mScoreboard&view=mSettings&view=mStatus&view=mTeam&view=mRoster&view=modular&view=mNav`
+      ),
+      axios.get(
+        `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/?view=proTeamSchedules`
+      )
+    ])
+  ).map(response => response.data);
   let currentMatchupPeriod = leagueData.status.currentMatchupPeriod;
   let matchup = leagueData.schedule.find(
     item =>
@@ -30,6 +32,7 @@
       item.matchupPeriodId == currentMatchupPeriod
   );
   let awaySkaters = matchup.away.rosterForCurrentScoringPeriod.entries
+    .filter(item => item.lineupSlotId != 8)
     .map(item => item.playerPoolEntry.player)
     .filter(
       item =>
@@ -39,6 +42,7 @@
         item.injuryStatus != "SUSPENSION"
     );
   let homeSkaters = matchup.home.rosterForCurrentScoringPeriod.entries
+    .filter(item => item.lineupSlotId != 8)
     .map(item => item.playerPoolEntry.player)
     .filter(
       item =>
@@ -48,6 +52,7 @@
         item.injuryStatus != "SUSPENSION"
     );
   let awayGoalies = matchup.away.rosterForCurrentScoringPeriod.entries
+    .filter(item => item.lineupSlotId != 8)
     .map(item => item.playerPoolEntry.player)
     .filter(
       item =>
@@ -57,6 +62,7 @@
         item.injuryStatus != "SUSPENSION"
     );
   let homeGoalies = matchup.home.rosterForCurrentScoringPeriod.entries
+    .filter(item => item.lineupSlotId != 8)
     .map(item => item.playerPoolEntry.player)
     .filter(
       item =>
