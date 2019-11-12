@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.5.3
+// @version      0.6.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -35,7 +35,8 @@
       item =>
         item.defaultPositionId != 5 &&
         item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT"
+        item.injuryStatus != "OUT" &&
+        item.injuryStatus != "SUSPENSION"
     );
   let homeSkaters = matchup.home.rosterForCurrentScoringPeriod.entries
     .map(item => item.playerPoolEntry.player)
@@ -43,7 +44,8 @@
       item =>
         item.defaultPositionId != 5 &&
         item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT"
+        item.injuryStatus != "OUT" &&
+        item.injuryStatus != "SUSPENSION"
     );
   let awayGoalies = matchup.away.rosterForCurrentScoringPeriod.entries
     .map(item => item.playerPoolEntry.player)
@@ -51,7 +53,8 @@
       item =>
         item.defaultPositionId == 5 &&
         item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT"
+        item.injuryStatus != "OUT" &&
+        item.injuryStatus != "SUSPENSION"
     );
   let homeGoalies = matchup.home.rosterForCurrentScoringPeriod.entries
     .map(item => item.playerPoolEntry.player)
@@ -59,7 +62,8 @@
       item =>
         item.defaultPositionId == 5 &&
         item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT"
+        item.injuryStatus != "OUT" &&
+        item.injuryStatus != "SUSPENSION"
     );
   let teamSchedules = scheduleData.settings.proTeams;
 
