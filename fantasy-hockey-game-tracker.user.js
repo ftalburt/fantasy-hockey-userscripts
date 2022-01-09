@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.8.0
+// @version      0.9.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -136,7 +136,7 @@
       let dates = listItems.map(item => item.innerText);
       let formattedDates = [];
       for (const date of dates) {
-        let yearlessDate = new Date(date);
+        let yearlessDate = new Date(`${date} 2000`);
         let dateWithYear = yearlessDate.getMonth() >= 7 ? `${seasonId - 1}${padNumber(yearlessDate.getMonth() + 1)}${padNumber(yearlessDate.getDate())}` : `${seasonId}${padNumber(yearlessDate.getMonth() + 1)}${padNumber(yearlessDate.getDate())}`;
         formattedDates.push(dateWithYear);
       }
