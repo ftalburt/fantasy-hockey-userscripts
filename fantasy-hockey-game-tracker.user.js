@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.9.0
+// @version      0.10.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -31,6 +31,8 @@
         (item.away && item.away.teamId == teamId)) &&
       item.matchupPeriodId == currentMatchupPeriod
   );
+  let awayTeamId = matchup.away.teamId;
+  let homeTeamId = matchup.home.teamId;
   let awaySkaters = matchup.away.rosterForCurrentScoringPeriod.entries
     .filter(item => item.lineupSlotId != 8)
     .map(item => item.playerPoolEntry.player)
@@ -158,10 +160,20 @@
         }
       }
 
+      let periodDetailsPromises = [];
+      for (const period of scoringPeriods) {
+        periodDetailsPromises.push(axios.get(`https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mMatchup&scoringPeriodId=${period}`));
+      }
+      let periodDetails = (await Promise.all(periodDetailsPromises)).map(response => response.data);
+
       let totalHomeSkaterGames = 0;
+      let scheduledHomeSkaterGames = 0;
       let totalAwaySkaterGames = 0;
+      let scheduledAwaySkaterGames = 0;
       let totalHomeGoalieGames = 0;
+      let scheduledHomeGoalieGames = 0;
       let totalAwayGoalieGames = 0;
+      let scheduledAwayGoalieGames = 0;
 
       awayGoalies.forEach(goalie => {
         let goalieTeamGames = teamSchedules.find(
@@ -170,12 +182,19 @@
         scoringPeriods.forEach(period => {
           if (goalieTeamGames[period] && !postponedGameIds.includes(`${goalieTeamGames[period][0].id}`)) {
             totalAwayGoalieGames++;
+            let periodDetail = periodDetails.find(periodDetail => periodDetail.scoringPeriodId == period);
+            let rosterForPeriod = periodDetail.teams.find(team => team.id == awayTeamId).roster.entries;
+            if (rosterForPeriod.find(entry => entry.playerId == goalie.id)?.lineupSlotId == 5) {
+              scheduledAwayGoalieGames++;
+            }
           }
         });
       });
 
       getNewLimitsCell("away").innerHTML =
         "Potential goalie games left: " + totalAwayGoalieGames;
+      getNewLimitsCell("away").innerHTML =
+        "Scheduled goalie games: " + scheduledAwayGoalieGames;
 
       awaySkaters.forEach(skater => {
         let skaterTeamGames = teamSchedules.find(
@@ -184,12 +203,19 @@
         scoringPeriods.forEach(period => {
           if (skaterTeamGames[period] && !postponedGameIds.includes(`${skaterTeamGames[period][0].id}`)) {
             totalAwaySkaterGames++;
+            let periodDetail = periodDetails.find(periodDetail => periodDetail.scoringPeriodId == period);
+            let rosterForPeriod = periodDetail.teams.find(team => team.id == awayTeamId).roster.entries;
+            if ([0, 1, 2, 3, 4, 6].includes(rosterForPeriod.find(entry => entry.playerId == skater.id)?.lineupSlotId)) {
+              scheduledAwaySkaterGames++;
+            }
           }
         });
       });
 
       getNewLimitsCell("away").innerHTML =
         "Potential skater games left: " + totalAwaySkaterGames;
+      getNewLimitsCell("away").innerHTML =
+        "Scheduled skater games: " + scheduledAwaySkaterGames;
 
       homeGoalies.forEach(goalie => {
         let goalieTeamGames = teamSchedules.find(
@@ -198,12 +224,19 @@
         scoringPeriods.forEach(period => {
           if (goalieTeamGames[period] && !postponedGameIds.includes(`${goalieTeamGames[period][0].id}`)) {
             totalHomeGoalieGames++;
+            let periodDetail = periodDetails.find(periodDetail => periodDetail.scoringPeriodId == period);
+            let rosterForPeriod = periodDetail.teams.find(team => team.id == homeTeamId).roster.entries;
+            if (rosterForPeriod.find(entry => entry.playerId == goalie.id)?.lineupSlotId == 5) {
+              scheduledHomeGoalieGames++;
+            }
           }
         });
       });
 
       getNewLimitsCell("home").innerHTML =
         "Potential goalie games left: " + totalHomeGoalieGames;
+      getNewLimitsCell("home").innerHTML =
+        "Scheduled goalie games: " + scheduledHomeGoalieGames;
 
       homeSkaters.forEach(skater => {
         let skaterTeamGames = teamSchedules.find(
@@ -212,12 +245,19 @@
         scoringPeriods.forEach(period => {
           if (skaterTeamGames[period] && !postponedGameIds.includes(`${skaterTeamGames[period][0].id}`)) {
             totalHomeSkaterGames++;
+            let periodDetail = periodDetails.find(periodDetail => periodDetail.scoringPeriodId == period);
+            let rosterForPeriod = periodDetail.teams.find(team => team.id == homeTeamId).roster.entries;
+            if ([0, 1, 2, 3, 4, 6].includes(rosterForPeriod.find(entry => entry.playerId == skater.id)?.lineupSlotId)) {
+              scheduledHomeSkaterGames++;
+            }
           }
         });
       });
 
       getNewLimitsCell("home").innerHTML =
         "Potential skater games left: " + totalHomeSkaterGames;
+      getNewLimitsCell("home").innerHTML =
+        "Scheduled skater games: " + scheduledHomeSkaterGames;
     }
   }, 1000);
 })();
