@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.10.1
+// @version      0.10.2
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -75,16 +75,6 @@
     );
   let teamSchedules = scheduleData.settings.proTeams;
 
-  let scoringPeriods = [].slice
-    .call(
-      document.querySelectorAll(".matchup-nav-section > div select > option")
-    )
-    .filter(
-      (item) =>
-        item.value != "total" &&
-        item.value >= leagueData.status.latestScoringPeriod
-    )
-    .map((item) => item.value);
   let interval = setInterval(async () => {
     let options = document.querySelectorAll(
       ".matchup-nav-section > div select > option"
