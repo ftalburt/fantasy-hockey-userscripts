@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.7.0
+// @version      0.8.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
