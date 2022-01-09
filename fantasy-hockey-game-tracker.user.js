@@ -12,7 +12,7 @@
 (async function() {
   let teamId = findGetParameter("teamId");
   let leagueId = findGetParameter("leagueId");
-  let seasonId = findGetParameter("seasonId");
+  let seasonId = parseInt(findGetParameter("seasonId"));
 
   let [leagueData, scheduleData] = (
     await Promise.all([
@@ -83,7 +83,7 @@
         item.value >= leagueData.status.latestScoringPeriod
     )
     .map(item => item.value);
-  let interval = setInterval(() => {
+  let interval = setInterval(async () => {
     let options = document.querySelectorAll(
       ".matchup-nav-section > div select > option"
     );
@@ -123,14 +123,41 @@
       getNewLimitsCell("home").innerHTML =
         "Skater games left: " + (homeSkaterTotal - homeSkaterPlayed);
 
-      let scoringPeriods = [].slice
-        .call(options)
-        .filter(
-          item =>
-            item.value != "total" &&
-            item.value >= leagueData.status.latestScoringPeriod
-        )
-        .map(item => item.value);
+      let listItems = [].slice
+      .call(options)
+      .filter(
+        item =>
+          item.value != "total" &&
+          item.value >= leagueData.status.latestScoringPeriod
+      );
+
+      let scoringPeriods = listItems.map(item => item.value);
+
+      let dates = listItems.map(item => item.innerText);
+      let formattedDates = [];
+      for (const date of dates) {
+        let yearlessDate = new Date(date);
+        let dateWithYear = yearlessDate.getMonth() >= 7 ? `${seasonId - 1}${padNumber(yearlessDate.getMonth() + 1)}${padNumber(yearlessDate.getDate())}` : `${seasonId}${padNumber(yearlessDate.getMonth() + 1)}${padNumber(yearlessDate.getDate())}`;
+        formattedDates.push(dateWithYear);
+      }
+
+      let schedulePromises = [];
+      for (const formattedDate of formattedDates) {
+        schedulePromises.push(axios.get(`https://site.api.espn.com/apis/fantasy/v2/games/fhl/games?useMap=true&dates=${formattedDate}&pbpOnly=true`));
+      }
+
+      let scheduleResponses = await Promise.all(schedulePromises);
+
+      let postponedGameIds = []
+
+      for (const scheduleResponse of scheduleResponses) {
+        for (const event of scheduleResponse.data.events) {
+          if (event.summary == "Postponed") {
+            postponedGameIds.push(event.id);
+          }
+        }
+      }
+
       let totalHomeSkaterGames = 0;
       let totalAwaySkaterGames = 0;
       let totalHomeGoalieGames = 0;
@@ -141,7 +168,7 @@
           team => team.id == goalie.proTeamId
         ).proGamesByScoringPeriod;
         scoringPeriods.forEach(period => {
-          if (goalieTeamGames[period]) {
+          if (goalieTeamGames[period] && !postponedGameIds.includes(`${goalieTeamGames[period][0].id}`)) {
             totalAwayGoalieGames++;
           }
         });
@@ -155,7 +182,7 @@
           team => team.id == skater.proTeamId
         ).proGamesByScoringPeriod;
         scoringPeriods.forEach(period => {
-          if (skaterTeamGames[period]) {
+          if (skaterTeamGames[period] && !postponedGameIds.includes(`${skaterTeamGames[period][0].id}`)) {
             totalAwaySkaterGames++;
           }
         });
@@ -169,7 +196,7 @@
           team => team.id == goalie.proTeamId
         ).proGamesByScoringPeriod;
         scoringPeriods.forEach(period => {
-          if (goalieTeamGames[period]) {
+          if (goalieTeamGames[period] && !postponedGameIds.includes(`${goalieTeamGames[period][0].id}`)) {
             totalHomeGoalieGames++;
           }
         });
@@ -183,7 +210,7 @@
           team => team.id == skater.proTeamId
         ).proGamesByScoringPeriod;
         scoringPeriods.forEach(period => {
-          if (skaterTeamGames[period]) {
+          if (skaterTeamGames[period] && !postponedGameIds.includes(`${skaterTeamGames[period][0].id}`)) {
             totalHomeSkaterGames++;
           }
         });
@@ -215,4 +242,13 @@ function getNewLimitsCell(location) {
     .insertRow(-1);
   row.insertCell(-1);
   return row.insertCell(-1);
+}
+
+/**
+ * Pad single digit numbers with a leading zero
+ * @param {number} numToPad The number to pad
+ * @returns {string} The padded number
+ */
+function padNumber(numToPad) {
+  return `${numToPad < 10 ? "0" : ""}${numToPad}`;
 }
