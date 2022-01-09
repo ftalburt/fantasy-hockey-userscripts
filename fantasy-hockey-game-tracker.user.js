@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.10.2
+// @version      0.11.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -13,6 +13,7 @@
   let teamId = findGetParameter("teamId");
   let leagueId = findGetParameter("leagueId");
   let seasonId = parseInt(findGetParameter("seasonId"));
+  let matchupPeriodId = findGetParameter("matchupPeriodId");
 
   let [leagueData, scheduleData] = (
     await Promise.all([
@@ -24,55 +25,6 @@
       ),
     ])
   ).map((response) => response.data);
-  let currentMatchupPeriod = leagueData.status.currentMatchupPeriod;
-  let matchup = leagueData.schedule.find(
-    (item) =>
-      ((item.home && item.home.teamId == teamId) ||
-        (item.away && item.away.teamId == teamId)) &&
-      item.matchupPeriodId == currentMatchupPeriod
-  );
-  let awayTeamId = matchup.away.teamId;
-  let homeTeamId = matchup.home.teamId;
-  let awaySkaters = matchup.away.rosterForCurrentScoringPeriod.entries
-    .filter((item) => item.lineupSlotId != 8)
-    .map((item) => item.playerPoolEntry.player)
-    .filter(
-      (item) =>
-        item.defaultPositionId != 5 &&
-        item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT" &&
-        item.injuryStatus != "SUSPENSION"
-    );
-  let homeSkaters = matchup.home.rosterForCurrentScoringPeriod.entries
-    .filter((item) => item.lineupSlotId != 8)
-    .map((item) => item.playerPoolEntry.player)
-    .filter(
-      (item) =>
-        item.defaultPositionId != 5 &&
-        item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT" &&
-        item.injuryStatus != "SUSPENSION"
-    );
-  let awayGoalies = matchup.away.rosterForCurrentScoringPeriod.entries
-    .filter((item) => item.lineupSlotId != 8)
-    .map((item) => item.playerPoolEntry.player)
-    .filter(
-      (item) =>
-        item.defaultPositionId == 5 &&
-        item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT" &&
-        item.injuryStatus != "SUSPENSION"
-    );
-  let homeGoalies = matchup.home.rosterForCurrentScoringPeriod.entries
-    .filter((item) => item.lineupSlotId != 8)
-    .map((item) => item.playerPoolEntry.player)
-    .filter(
-      (item) =>
-        item.defaultPositionId == 5 &&
-        item.injuryStatus != "INJURY_RESERVE" &&
-        item.injuryStatus != "OUT" &&
-        item.injuryStatus != "SUSPENSION"
-    );
   let teamSchedules = scheduleData.settings.proTeams;
 
   let interval = setInterval(async () => {
@@ -165,7 +117,12 @@
       for (const period of scoringPeriods) {
         periodDetailsPromises.push(
           axios.get(
-            `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mMatchup&scoringPeriodId=${period}`
+            `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mMatchup&scoringPeriodId=${period}`,
+            {
+              headers: {
+                "x-fantasy-filter": `{"schedule":{"filterMatchupPeriodIds":{"value":[${matchupPeriodId}]}}}`,
+              },
+            }
           )
         );
       }
@@ -173,142 +130,170 @@
         (response) => response.data
       );
 
-      let totalHomeSkaterGames = 0;
-      let scheduledHomeSkaterGames = 0;
-      let totalAwaySkaterGames = 0;
-      let scheduledAwaySkaterGames = 0;
-      let totalHomeGoalieGames = 0;
-      let scheduledHomeGoalieGames = 0;
-      let totalAwayGoalieGames = 0;
-      let scheduledAwayGoalieGames = 0;
+      let gameData = {
+        home: {
+          skater: {
+            potentialGames: 0,
+            scheduledGames: 0,
+          },
+          goalie: {
+            potentialGames: 0,
+            scheduledGames: 0,
+          },
+        },
+        away: {
+          skater: {
+            potentialGames: 0,
+            scheduledGames: 0,
+          },
+          goalie: {
+            potentialGames: 0,
+            scheduledGames: 0,
+          },
+        },
+      };
 
-      awayGoalies.forEach((goalie) => {
-        let goalieTeamGames = teamSchedules.find(
-          (team) => team.id == goalie.proTeamId
-        ).proGamesByScoringPeriod;
-        scoringPeriods.forEach((period) => {
-          if (
-            goalieTeamGames[period] &&
-            !postponedGameIds.includes(`${goalieTeamGames[period][0].id}`)
-          ) {
-            totalAwayGoalieGames++;
-            let periodDetail = periodDetails.find(
-              (periodDetail) => periodDetail.scoringPeriodId == period
-            );
-            let rosterForPeriod = periodDetail.teams.find(
-              (team) => team.id == awayTeamId
-            ).roster.entries;
+      let homeTeamId;
+      let awayTeamId;
+      let firstLoopIteration = true;
+      for (const periodDetail of periodDetails) {
+        if (firstLoopIteration) {
+          let matchup = periodDetail.schedule.find(
+            (item) => item.home?.teamId == teamId || item.away?.teamId == teamId
+          );
+          homeTeamId = matchup.home?.teamId;
+          awayTeamId = matchup.away?.teamId;
+        }
+
+        if (homeTeamId != undefined && awayTeamId != undefined) {
+          let period = periodDetail.scoringPeriodId;
+          // Update home gameData
+          let homePlayers = periodDetail.teams.find(
+            (team) => team.id == homeTeamId
+          ).roster.entries;
+          for (const player of homePlayers) {
+            let playerTeamSchedule = teamSchedules.find(
+              (team) => team.id == player.playerPoolEntry.player.proTeamId
+            ).proGamesByScoringPeriod;
+
             if (
-              rosterForPeriod.find((entry) => entry.playerId == goalie.id)
-                ?.lineupSlotId == 5
+              player.playerPoolEntry.player.injuryStatus != "INJURY_RESERVE" &&
+              player.playerPoolEntry.player.injuryStatus != "OUT" &&
+              player.playerPoolEntry.player.injuryStatus != "SUSPENSION"
             ) {
-              scheduledAwayGoalieGames++;
+              if (
+                player.playerPoolEntry.player.defaultPositionId != 5 &&
+                player.lineupSlotId != 8 &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.home.skater.potentialGames++;
+              } else if (
+                player.playerPoolEntry.player.defaultPositionId == 5 &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.home.goalie.potentialGames++;
+              }
+
+              if (
+                [0, 1, 2, 3, 4, 6].includes(player.lineupSlotId) &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.home.skater.scheduledGames++;
+              } else if (
+                player.lineupSlotId == 5 &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.home.goalie.scheduledGames++;
+              }
             }
           }
-        });
-      });
+          // Update away gameData
+          let awayPlayers = periodDetail.teams.find(
+            (team) => team.id == awayTeamId
+          ).roster.entries;
+          for (const player of awayPlayers) {
+            let playerTeamSchedule = teamSchedules.find(
+              (team) => team.id == player.playerPoolEntry.player.proTeamId
+            ).proGamesByScoringPeriod;
 
-      getNewLimitsCell("away").innerHTML =
-        "Potential goalie games left: " + totalAwayGoalieGames;
-      getNewLimitsCell("away").innerHTML =
-        "Scheduled goalie games: " + scheduledAwayGoalieGames;
-
-      awaySkaters.forEach((skater) => {
-        let skaterTeamGames = teamSchedules.find(
-          (team) => team.id == skater.proTeamId
-        ).proGamesByScoringPeriod;
-        scoringPeriods.forEach((period) => {
-          if (
-            skaterTeamGames[period] &&
-            !postponedGameIds.includes(`${skaterTeamGames[period][0].id}`)
-          ) {
-            totalAwaySkaterGames++;
-            let periodDetail = periodDetails.find(
-              (periodDetail) => periodDetail.scoringPeriodId == period
-            );
-            let rosterForPeriod = periodDetail.teams.find(
-              (team) => team.id == awayTeamId
-            ).roster.entries;
             if (
-              [0, 1, 2, 3, 4, 6].includes(
-                rosterForPeriod.find((entry) => entry.playerId == skater.id)
-                  ?.lineupSlotId
-              )
+              player.playerPoolEntry.player.injuryStatus != "INJURY_RESERVE" &&
+              player.playerPoolEntry.player.injuryStatus != "OUT" &&
+              player.playerPoolEntry.player.injuryStatus != "SUSPENSION"
             ) {
-              scheduledAwaySkaterGames++;
+              if (
+                player.playerPoolEntry.player.defaultPositionId != 5 &&
+                player.lineupSlotId != 8 &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.away.skater.potentialGames++;
+              } else if (
+                player.playerPoolEntry.player.defaultPositionId == 5 &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.away.goalie.potentialGames++;
+              }
+
+              if (
+                [0, 1, 2, 3, 4, 6].includes(player.lineupSlotId) &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.away.skater.scheduledGames++;
+              } else if (
+                player.lineupSlotId == 5 &&
+                playerTeamSchedule[period] &&
+                !postponedGameIds.includes(
+                  `${playerTeamSchedule[period][0].id}`
+                )
+              ) {
+                gameData.away.goalie.scheduledGames++;
+              }
             }
           }
-        });
-      });
+        } else {
+          break;
+        }
+        firstLoopIteration = false;
+      }
 
       getNewLimitsCell("away").innerHTML =
-        "Potential skater games left: " + totalAwaySkaterGames;
+        "Potential goalie games left: " + gameData.away.goalie.potentialGames;
       getNewLimitsCell("away").innerHTML =
-        "Scheduled skater games: " + scheduledAwaySkaterGames;
-
-      homeGoalies.forEach((goalie) => {
-        let goalieTeamGames = teamSchedules.find(
-          (team) => team.id == goalie.proTeamId
-        ).proGamesByScoringPeriod;
-        scoringPeriods.forEach((period) => {
-          if (
-            goalieTeamGames[period] &&
-            !postponedGameIds.includes(`${goalieTeamGames[period][0].id}`)
-          ) {
-            totalHomeGoalieGames++;
-            let periodDetail = periodDetails.find(
-              (periodDetail) => periodDetail.scoringPeriodId == period
-            );
-            let rosterForPeriod = periodDetail.teams.find(
-              (team) => team.id == homeTeamId
-            ).roster.entries;
-            if (
-              rosterForPeriod.find((entry) => entry.playerId == goalie.id)
-                ?.lineupSlotId == 5
-            ) {
-              scheduledHomeGoalieGames++;
-            }
-          }
-        });
-      });
+        "Scheduled goalie games: " + gameData.away.goalie.scheduledGames;
+      getNewLimitsCell("away").innerHTML =
+        "Potential skater games left: " + gameData.away.skater.potentialGames;
+      getNewLimitsCell("away").innerHTML =
+        "Scheduled skater games: " + gameData.away.skater.scheduledGames;
 
       getNewLimitsCell("home").innerHTML =
-        "Potential goalie games left: " + totalHomeGoalieGames;
+        "Potential goalie games left: " + gameData.home.goalie.potentialGames;
       getNewLimitsCell("home").innerHTML =
-        "Scheduled goalie games: " + scheduledHomeGoalieGames;
-
-      homeSkaters.forEach((skater) => {
-        let skaterTeamGames = teamSchedules.find(
-          (team) => team.id == skater.proTeamId
-        ).proGamesByScoringPeriod;
-        scoringPeriods.forEach((period) => {
-          if (
-            skaterTeamGames[period] &&
-            !postponedGameIds.includes(`${skaterTeamGames[period][0].id}`)
-          ) {
-            totalHomeSkaterGames++;
-            let periodDetail = periodDetails.find(
-              (periodDetail) => periodDetail.scoringPeriodId == period
-            );
-            let rosterForPeriod = periodDetail.teams.find(
-              (team) => team.id == homeTeamId
-            ).roster.entries;
-            if (
-              [0, 1, 2, 3, 4, 6].includes(
-                rosterForPeriod.find((entry) => entry.playerId == skater.id)
-                  ?.lineupSlotId
-              )
-            ) {
-              scheduledHomeSkaterGames++;
-            }
-          }
-        });
-      });
-
+        "Scheduled goalie games: " + gameData.home.goalie.scheduledGames;
       getNewLimitsCell("home").innerHTML =
-        "Potential skater games left: " + totalHomeSkaterGames;
+        "Potential skater games left: " + gameData.home.skater.potentialGames;
       getNewLimitsCell("home").innerHTML =
-        "Scheduled skater games: " + scheduledHomeSkaterGames;
+        "Scheduled skater games: " + gameData.home.skater.scheduledGames;
     }
   }, 1000);
 })();
