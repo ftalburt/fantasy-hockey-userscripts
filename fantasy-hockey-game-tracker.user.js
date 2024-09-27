@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantasy Hockey Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      0.11.0
+// @version      0.12.0
 // @description  Adds information about number of games left to boxscore page on ESPN fantasy hockey
 // @author       Forrest Talburt
 // @match        https://fantasy.espn.com/hockey/boxscore*
@@ -18,10 +18,11 @@
   let [leagueData, scheduleData] = (
     await Promise.all([
       axios.get(
-        `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mBoxscore&view=mMatchupScore&view=mSchedule&view=mScoreboard&view=mSettings&view=mStatus&view=mTeam&view=mRoster&view=modular&view=mNav`
+        `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mBoxscore&view=mMatchupScore&view=mRoster&view=mSettings&view=mStatus&view=mTeam&view=modular&view=mNav`,
+         { withCredentials: true }
       ),
       axios.get(
-        `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/?view=proTeamSchedules`
+        `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/?view=proTeamSchedules`
       ),
     ])
   ).map((response) => response.data);
@@ -117,11 +118,12 @@
       for (const period of scoringPeriods) {
         periodDetailsPromises.push(
           axios.get(
-            `https://fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mMatchup&scoringPeriodId=${period}`,
+            `https://lm-api-reads.fantasy.espn.com/apis/v3/games/fhl/seasons/${seasonId}/segments/0/leagues/${leagueId}?view=mMatchup&scoringPeriodId=${period}`,
             {
               headers: {
                 "x-fantasy-filter": `{"schedule":{"filterMatchupPeriodIds":{"value":[${matchupPeriodId}]}}}`,
               },
+              withCredentials: true
             }
           )
         );
