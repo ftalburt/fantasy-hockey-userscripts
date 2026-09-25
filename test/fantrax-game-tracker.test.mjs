@@ -23,10 +23,18 @@ export function gamesPerPos({ teamId = 'teamA', period = 1, skaters = [0, '52'],
 }
 
 // days: array of header labels like 'Tue 9/29'; games: {label -> 'Tue 4:00PM' | '' }
-export function scheduleRow({ name = 'A. Player', statusId = '1', icons = [], games = {} }, days) {
-  const cells = [{ content: '1 • 2' }, { content: '30' }, { content: '100' }, { content: '2.5' }];
+// posId: the SLOT's position (206 C, 203 LW, 204 RW, 202 D, 208 Skt/flex, 201 G — real ids 2026-09-24); posIds/pos: the
+// player's own positions (scorer.posIdsNoFlex / posShortNames); tip: the rank cell's toolTip ("Skt rank: 42 • …").
+// name === null with a posId is an OPEN active slot; name === null without one is Fantrax's "Reserve spot(s) available" row.
+const POS_NAME = { 206: 'C', 203: 'LW', 204: 'RW', 202: 'D', 201: 'G' };
+export function scheduleRow({ name = 'A. Player', statusId = '1', icons = [], games = {}, posId, posIds, pos, tip }, days) {
+  posId = posId || '206';
+  const cells = [Object.assign({ content: '1 • 2' }, tip ? { toolTip: tip } : {}), { content: '30' }, { content: '100' }, { content: '2.5' }];
   for (const d of days) cells.push(games[d] !== undefined ? { content: `@XXX<br/>${games[d]}`, eventId: 'e' + d } : { content: '' });
-  return { scorer: name === null ? undefined : { name, shortName: name, scorerId: 'id-' + name, icons }, posId: '206', statusId, cells };
+  const ids = posIds || [posId === '208' ? '206' : posId];
+  const row = { posId, statusId, cells };
+  if (name !== null) row.scorer = { name, shortName: name, scorerId: 'id-' + name, icons, posIdsNoFlex: ids, posShortNames: pos || ids.map(i => POS_NAME[i] || i).join(',') };
+  return row;
 }
 export function schedule({ days, skaters = [], goalies = [] }) {
   // real shape (2026-09-23): fixed columns have name+shortName, day columns have only shortName + key "sched_M/D" + eventStr
@@ -170,7 +178,7 @@ function labelFor(day) { const [y, m, d] = day.split('-').map(Number); const t =
 // a SCHEDULE_FULL-like response: day columns from `from` for `n` days; players: name → {statusId, games: {day: 'Tue 4:00PM'}}
 function scheduleFrom(from, n, players, goalies = {}) {
   const days = Array.from({ length: n }, (_, i) => labelFor(T.addDays(from, i)));
-  const row = ([name, v]) => ({ name, statusId: v.statusId || '1', icons: v.icons || [], games: Object.fromEntries(Object.entries(v.games || {}).map(([d, t]) => [labelFor(d), t])) });
+  const row = ([name, v]) => ({ name, statusId: v.statusId || '1', icons: v.icons || [], posId: v.posId, posIds: v.posIds, pos: v.pos, games: Object.fromEntries(Object.entries(v.games || {}).map(([d, t]) => [labelFor(d), t])) });
   return schedule({ days, skaters: Object.entries(players).map(row), goalies: Object.entries(goalies).map(row) });
 }
 // a STATS-like response for one lineup day: only statuses matter
@@ -250,12 +258,15 @@ test('loadTeam: games-played, then the 30-day schedule and one stats call per re
   assert.equal(new Set(f.calls.map(c => c.url)).size, 1);
 });
 
-test('loadTeam asks lineups only from today on; earlier days get no status', async () => {
-  const stats = {}; for (let n = 3; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' });
-  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: { games: { '2026-09-29': 'Tue 4:00PM', '2026-10-01': 'Thu 7:00PM' } } }) }, stats));
+test('loadTeam asks the lineup of every period day, past days included, and exposes them per day', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: n === 1 ? '2' : '1' });
+  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: { games: { '2026-10-01': 'Thu 7:00PM' } } }),
+    'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: { games: { '2026-09-29': 'Tue 4:00PM', '2026-10-01': 'Thu 7:00PM' } } }) }, stats));
   const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18);   // Thu Oct 1 = lineup day 3
-  assert.deepEqual(f.calls.filter(c => c.data.view === 'STATS').map(c => c.data.period), ['3', '4', '5', '6']);
-  assert.deepEqual(t.groups.skaters.rows[0].games.map(g => g.status), ['ir', 'active']);
+  assert.deepEqual(f.calls.filter(c => c.data.view === 'STATS').map(c => c.data.period), ['1', '2', '3', '4', '5', '6']);
+  assert.deepEqual(t.groups.skaters.rows[0].games.map(g => [g.day, g.status]), [['2026-09-29', 'reserve'], ['2026-10-01', 'active']], 'Tuesday takes Tuesday\'s lineup (he was on reserve), Thursday its own');
+  assert.deepEqual(Object.keys(t.lineups).sort(), ['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04']);
+  assert.deepEqual(t.lineups['2026-09-29'].slots.map(x => [x.pos, x.status, x.id]), [['C', 'reserve', 'id-S']]);
 });
 
 test('loadTeam falls back to per-week schedule calls for period days beyond the 30-day window', async () => {
@@ -383,4 +394,118 @@ test('cachedLoadTeam also caches a load under its resolved scoring period, so th
   const b = await T.cachedLoadTeam('abc', { teamId: null, period: 2, day: null }, f, NOW_PRESEASON);
   assert.equal(f.calls.length, n, 'no new requests');
   assert.equal(a, b);
+});
+
+// ---- week view (1.2.0): opponent + time per game, injury tags, per-day lineup slots ----
+
+test('parseGameText splits opponent and time and drops the weekday', () => {
+  assert.deepEqual(T.parseGameText('@CAR<br/>Tue 4:00PM'), { opp: '@CAR', time: '4:00PM' });
+  assert.deepEqual(T.parseGameText('VAN<br>Sat 6:00PM'), { opp: 'VAN', time: '6:00PM' });
+  assert.deepEqual(T.parseGameText('@CAR'), { opp: '@CAR', time: '' });
+  assert.deepEqual(T.parseGameText(''), { opp: '', time: '' });
+  assert.deepEqual(T.parseGameText('@CAR<br/>2-1 F'), { opp: '@CAR', time: '2-1 F' }, 'a finished game keeps whatever Fantrax shows');
+});
+
+test('iconTag: Out, IR and Suspended will not play; Day-to-Day and Minors are notes; other icons are ignored', () => {
+  assert.deepEqual(T.iconTag([{ typeId: '9', tooltip: 'news' }, { typeId: '30', tooltip: 'Lower body - Out Indefinitely' }]), { text: 'OUT', kind: 'out', tip: 'Lower body - Out Indefinitely' });
+  assert.deepEqual(T.iconTag([{ typeId: '2', tooltip: 'Injured Reserve List - …' }]), { text: 'IR', kind: 'out', tip: 'Injured Reserve List - …' });
+  assert.deepEqual(T.iconTag([{ typeId: '6', tooltip: 'Suspended' }]), { text: 'SUSP', kind: 'out', tip: 'Suspended' });
+  assert.deepEqual(T.iconTag([{ typeId: '1', tooltip: 'Undisclosed - Day-to-Day' }]), { text: 'DTD', kind: 'note', tip: 'Undisclosed - Day-to-Day' });
+  assert.deepEqual(T.iconTag([{ typeId: '4', tooltip: 'Minor Leagues' }]), { text: 'MINORS', kind: 'note', tip: 'Minor Leagues' }, 'not MIN: that is Minnesota in the game column');
+  assert.deepEqual(T.iconTag([{ typeId: '1' }, { typeId: '2' }]), { text: 'IR', kind: 'out', tip: '' }, 'the worst one wins');
+  assert.equal(T.iconTag([{ typeId: '20', tooltip: 'Keeper' }]), null);
+  assert.equal(T.iconTag(undefined), null);
+  assert.ok(T.INJURY_ICON_TYPES.has('6'), 'a suspended player never counts as scheduled');
+});
+
+test('parseScheduleRows keeps opponent, time, the player\'s positions and his injury tag', () => {
+  const period = T.parsePeriodList(gamesPerPos().displayedLists.scoringPeriodList)[0];
+  const data = scheduleFrom('2026-09-29', 30, {
+    Two: { pos: 'C,LW', posIds: ['206', '203'], games: { '2026-09-29': 'Tue 4:00PM' } },
+    Hurt: { icons: [{ typeId: '1', tooltip: 'Undisclosed - Day-to-Day' }], games: { '2026-09-30': 'Wed 6:30PM' } },
+  });
+  const r = T.parseScheduleRows(data, period);
+  assert.deepEqual(r.skaters.map(x => [x.pos, x.tag, x.injured]), [['C,LW', null, false], ['C', { text: 'DTD', kind: 'note', tip: 'Undisclosed - Day-to-Day' }, false]]);
+  assert.deepEqual(r.skaters[0].games[0].opp, '@XXX');
+  assert.deepEqual(r.skaters[0].games[0].time, '4:00PM');
+});
+
+test('parseDayLineup: slots in Fantrax order with position labels, an open active slot, the empty-reserve row skipped', () => {
+  const data = schedule({ days: [], skaters: [
+    { name: 'A', posId: '206' },
+    { name: 'B', posId: '203', posIds: ['203', '204'], pos: 'LW,RW' },
+    { name: null, posId: '204', statusId: '1' },                                   // open RW slot
+    { name: 'F', posId: '208', posIds: ['206'], pos: 'C', tip: 'Skt rank: 42 • Overall rank: 5' },
+    { name: 'U', posId: '299', posIds: ['206'], pos: 'C' },                         // a slot id nothing names
+    { name: 'R', posId: '203', statusId: '2' },
+    { name: 'I', posId: '206', statusId: '3' },
+  ], goalies: [{ name: 'G1', posId: '201' }] });
+  data.tables[0].rows.push({ statusId: '2', numSpotsAvailableText: 'Reserve spot(s) available', cells: [] });
+  const l = T.parseDayLineup(data);
+  assert.deepEqual(l.slots.map(x => [x.posId, x.pos, x.status, x.id, x.name, x.group]), [
+    ['206', 'C', 'active', 'id-A', 'A', 'skaters'], ['203', 'LW', 'active', 'id-B', 'B', 'skaters'], ['204', 'RW', 'active', null, '', 'skaters'],
+    ['208', 'Skt', 'active', 'id-F', 'F', 'skaters'], ['299', '299', 'active', 'id-U', 'U', 'skaters'],
+    ['203', 'LW', 'reserve', 'id-R', 'R', 'skaters'], ['206', 'C', 'ir', 'id-I', 'I', 'skaters'], ['201', 'G', 'active', 'id-G1', 'G1', 'goalies']]);
+  assert.deepEqual(l.statuses, { 'id-A': 'active', 'id-B': 'active', 'id-F': 'active', 'id-U': 'active', 'id-R': 'reserve', 'id-I': 'ir', 'id-G1': 'active' });
+  const flexOnly = T.parseDayLineup(schedule({ days: [], skaters: [{ name: 'F', posId: '208', posIds: ['206'], pos: 'C' }] }));
+  assert.equal(flexOnly.slots[0].pos, 'Skt', 'the flex slot label falls back to the known NHL id when no tooltip names it');
+});
+
+test('dayLabel: "Thu 10/1" style, weekday from the calendar', () => {
+  assert.equal(T.dayLabel('2026-10-01'), 'Thu 10/1');
+  assert.equal(T.dayLabel('2027-01-03'), 'Sun 1/3');
+});
+
+// a team as loadTeam builds it, with hand-written lineups
+function weekTeam({ rows, goalies = [], lineups }) {
+  const period = T.parsePeriodList(gamesPerPos().displayedLists.scoringPeriodList)[0];
+  const statusByDay = {}; for (const [day, l] of Object.entries(lineups)) statusByDay[day] = l.statuses;
+  return { teamId: 'teamA', teamName: 'Alpha Bets', period, lineups, groups: {
+    skaters: { played: 0, max: 52, rows: T.applyDayStatuses(rows, statusByDay) },
+    goalies: { played: 0, max: 4, rows: T.applyDayStatuses(goalies, statusByDay) } } };
+}
+const game = (day, time, opp = '@XXX') => ({ day, start: T.parseStart(time, day), opp, time: time.replace(/^\w{3} /, '') });
+const prow = (name, games, extra) => Object.assign({ id: 'id-' + name, name, pos: 'C', injured: false, tag: null, games }, extra);
+const slot = (pos, status, name, group = 'skaters') => ({ posId: pos, pos, status, id: name ? 'id-' + name : null, name: name || '', group });
+
+test('weekView: one entry per period day; slots keep lineup order and become game / idle / open / out', () => {
+  const thu = '2026-10-01';
+  const team = weekTeam({
+    rows: [prow('A', [game('2026-09-29', 'Tue 4:00PM'), game(thu, 'Thu 7:00PM', 'CHI')]), prow('B', [game(thu, 'Thu 6:00PM')]),
+      prow('C', [game(thu, 'Thu 9:00PM')], { injured: true, tag: { text: 'OUT', kind: 'out' } }), prow('D', [game('2026-10-03', 'Sat 7:00PM')]),
+      prow('N', [game(thu, 'Thu 8:00PM')], { tag: { text: 'DTD', kind: 'note' } })],
+    goalies: [prow('G', [game(thu, 'Thu 7:00PM')])],
+    lineups: { [thu]: { statuses: { 'id-A': 'active', 'id-B': 'reserve', 'id-C': 'active', 'id-D': 'active', 'id-N': 'active', 'id-G': 'active' },
+      slots: [slot('C', 'active', 'A'), slot('LW', 'reserve', 'B'), slot('RW', 'active', 'C'), slot('D', 'active', 'D'), slot('D', 'active', null), slot('C', 'active', 'N'), slot('G', 'active', 'G', 'goalies')] } },
+  });
+  const w = T.weekView(team, NOW_THU_18);
+  assert.deepEqual(w.days.map(d => [d.day, d.label, d.state]), [['2026-09-29', 'Tue 9/29', 'past'], ['2026-09-30', 'Wed 9/30', 'past'], [thu, 'Thu 10/1', 'today'],
+    ['2026-10-02', 'Fri 10/2', 'future'], ['2026-10-03', 'Sat 10/3', 'future'], ['2026-10-04', 'Sun 10/4', 'future']]);
+  const d = w.days[2];
+  assert.deepEqual(d.slots.map(s => [s.pos, s.kind, s.name, s.opp, s.time, s.tag && s.tag.text]), [
+    ['C', 'game', 'A', 'CHI', '7:00PM', null], ['RW', 'out', 'C', '@XXX', '9:00PM', 'OUT'], ['D', 'idle', 'D', '', '', null], ['D', 'open', '', '', '', null], ['C', 'game', 'N', '@XXX', '8:00PM', 'DTD']]);
+  assert.deepEqual(d.goalies.map(s => [s.pos, s.kind, s.name]), [['G', 'game', 'G']]);
+  assert.deepEqual(d.bench.map(s => [s.pos, s.name, s.time]), [['LW', 'B', '6:00PM']], 'reserve players with a game that day');
+  assert.deepEqual(d.counts, { playing: 2, idle: 1, open: 1, out: 1 }, 'skater slots only; goalies are listed apart');
+  assert.equal(w.days[0].slots, null, 'a day whose lineup was not loaded has no slot list');
+  assert.deepEqual(w.days[0].bench, []);
+  assert.deepEqual(w.games, { skaters: 2, goalies: 1 }, 'active games by healthy players over the period: A and N on Thu; C is out, A\'s Tuesday has no lineup loaded');
+});
+
+test('weekView: bench is sorted by start time, injured reserve players are left out, IR players never appear', () => {
+  const thu = '2026-10-01';
+  const team = weekTeam({
+    rows: [prow('Late', [game(thu, 'Thu 9:00PM')]), prow('Early', [game(thu, 'Thu 6:00PM')]), prow('Hurt', [game(thu, 'Thu 7:00PM')], { injured: true, tag: { text: 'IR', kind: 'out' } }), prow('Ir', [game(thu, 'Thu 7:00PM')])],
+    lineups: { [thu]: { statuses: { 'id-Late': 'reserve', 'id-Early': 'reserve', 'id-Hurt': 'reserve', 'id-Ir': 'ir' },
+      slots: [slot('C', 'reserve', 'Late'), slot('C', 'reserve', 'Early'), slot('C', 'reserve', 'Hurt'), slot('C', 'ir', 'Ir')] } },
+  });
+  const d = T.weekView(team, NOW_THU_18).days[2];
+  assert.deepEqual(d.bench.map(s => s.name), ['Early', 'Late']);
+  assert.deepEqual(d.slots, []);
+});
+
+test('weekView: a lineup player missing from the schedule (dropped since) shows as idle with his lineup name', () => {
+  const thu = '2026-10-01';
+  const team = weekTeam({ rows: [], lineups: { [thu]: { statuses: { 'id-Gone': 'active' }, slots: [slot('C', 'active', 'Gone')] } } });
+  assert.deepEqual(T.weekView(team, NOW_THU_18).days[2].slots.map(s => [s.kind, s.name]), [['idle', 'Gone']]);
 });
