@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.0
+// @version      1.3.1
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -20,6 +20,8 @@
  * players who play, open slots and injury tags) and recolours the Schedule - Week cells by each day's real lineup.
  * 1.3.0 adds an opt-in that counts flagged players from Fantrax's expected return date (getPlayerProfile, read-only),
  * with the players it moved listed under the tables.
+ * 1.3.1 lists players in IR (or any off-lineup slot) who are expected back this period, with the players Fantrax says
+ * could take their slot; nothing about them is counted.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -197,9 +199,13 @@ function parseDayStatuses(data) {
 // One lineup day's roster response → the day's slots in Fantrax order: {posId, pos, status, id, name, group}. An active slot
 // with no scorer is OPEN (nobody in it); the "Reserve spot(s) available" row has no posId and is skipped. Slot labels come
 // from the players themselves (posIdsNoFlex ↔ posShortNames), else the rank cell's tooltip ("Skt rank: …"), else POS_FALLBACK.
+// 1.3.1: also statusNames {statusId: name} from each table's statusTotals, detail {scorerId: {statusId, eligible}} where
+// eligible = the row's eligibleStatusIds (Fantrax's own per-player answer under the league's rules; [] when absent),
+// and eligible on every slot.
 function parseDayLineup(data) {
-  const names = Object.assign({}, POS_FALLBACK), slots = [], statuses = {};
+  const names = Object.assign({}, POS_FALLBACK), slots = [], statuses = {}, statusNames = {}, detail = {};
   const tables = data.tables || [];
+  for (const table of tables) for (const st of table.statusTotals || []) if (st && st.id !== undefined && st.name) statusNames[String(st.id)] = String(st.name);
   for (const table of tables) for (const row of table.rows || []) {
     const sc = row.scorer;
     if (!sc) continue;
@@ -213,20 +219,37 @@ function parseDayLineup(data) {
     for (const row of table.rows || []) {
       if (!row.posId) continue;
       const status = STATUS_BY_ID[row.statusId] || 'ir', sc = row.scorer;
-      if (sc && sc.scorerId) statuses[sc.scorerId] = status;
+      const eligible = Array.isArray(row.eligibleStatusIds) ? row.eligibleStatusIds.map(String) : [];
+      if (sc && sc.scorerId) { statuses[sc.scorerId] = status; detail[sc.scorerId] = { statusId: String(row.statusId), eligible }; }
       slots.push({ posId: String(row.posId), pos: names[row.posId] || String(row.posId), status, id: sc && sc.scorerId ? sc.scorerId : null,
-        name: sc ? (sc.name || sc.shortName || '') : '', shortName: sc ? (sc.shortName || sc.name || '') : '', group });
+        name: sc ? (sc.name || sc.shortName || '') : '', shortName: sc ? (sc.shortName || sc.name || '') : '', group, eligible });
     }
   }
-  return { slots, statuses };
+  return { slots, statuses, statusNames, detail };
+}
+// 1.3.1: the label of a roster status and its short form for tags / line prefixes ("Inj Res" → "IR", "Minors" → "MINORS").
+function statusLabel(statusNames, statusId) { return (statusNames && statusNames[String(statusId)]) || 'off-lineup'; }
+function statusShort(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return words.length >= 2 ? words.map(w => w[0]).join('').toUpperCase() : (words[0] || '').toUpperCase();
 }
 // statusByDay: {day: {scorerId: status}}. A game takes its day's lineup status; a day with no lineup fetched (a past
 // day — already inside Played) or a player absent from that day's roster counts as ir, i.e. not at all.
-function applyDayStatuses(rows, statusByDay) {
-  return rows.map(row => Object.assign({}, row, { games: row.games.map(g => {
-    const day = statusByDay[g.day];
-    return Object.assign({}, g, { status: (day && day[row.id]) || 'ir' });
-  }) }));
+// detailByDay (1.3.1, optional): {day: {scorerId: {statusId, eligible}}} — each game also gets its raw statusId (null when
+// unknown) and the row gets `eligible` from the latest day that lists him ([] if none).
+function applyDayStatuses(rows, statusByDay, detailByDay) {
+  return rows.map(row => {
+    const games = row.games.map(g => {
+      const day = statusByDay[g.day], out = Object.assign({}, g, { status: (day && day[row.id]) || 'ir' });
+      if (detailByDay) { const d = detailByDay[g.day] && detailByDay[g.day][row.id]; out.statusId = d ? d.statusId : null; }
+      return out;
+    });
+    if (!detailByDay) return Object.assign({}, row, { games });
+    let eligible = [];
+    const statusIds = {};   // 1.3.1: the slot status of every day that lists him — "current slot" for the swap hint
+    for (const day of Object.keys(detailByDay).sort()) { const d = detailByDay[day][row.id]; if (d) { eligible = d.eligible; statusIds[day] = d.statusId; } }
+    return Object.assign({}, row, { games, eligible, statusIds });
+  });
 }
 
 // ---------------------------------------------------------------- logic: compute
@@ -325,6 +348,70 @@ function formatEffect(e) {
   return e.name + ' ' + dayLabel(e.date) + ' ' + (e.delta > 0 ? '+' + e.delta : '\u2212' + (-e.delta)) + (e.goalie ? ' (G)' : '') + (e.bench ? ' (bench)' : '');
 }
 
+// 1.3.1: players sitting in off-lineup slots (IR, or any status that is neither Active nor Reserve) for every pending
+// game they have this period. Nothing about them is counted; this is visibility only.
+// Entry = {kind: "cleared" | "back", id, name, statusId, statusName, short, date, games, swapCandidates?, goalie?}.
+//   cleared — Fantrax no longer allows him in that slot (his eligibleStatusIds lack its status; with no eligibility
+//             data, the injury flag being gone stands in): games = all pending games; the roster is illegal until he moves.
+//   back    — flagged, with an effective return date on or before the period's end (so only with the option on): games
+//             = pending games from that date; swapCandidates = players whose CURRENT slot is Active or Reserve, whom
+//             Fantrax says may enter that status, and who have no counted pending game — they can take the spot for free.
+// "Current slot" = the latest lineup day on or before today that lists him, else the earliest that does.
+function currentStatusId(row, today) {
+  const days = Object.keys(row.statusIds || {}).sort();
+  if (!days.length) return null;
+  const past = days.filter(d => d <= today);
+  return row.statusIds[past.length ? past[past.length - 1] : days[0]];
+}
+function offLineup(team, now, opts = {}) {
+  const today = dayString(now), period = team.period, days = new Set(period.days), names = team.statusNames || {};
+  const all = [].concat(team.groups.skaters.rows.map(r => [r, false]), team.groups.goalies.rows.map(r => [r, true]));
+  const pendingIn = row => row.games.filter(g => days.has(g.day) && isPending(g, today, now));
+  const inLineup = g => g.status === 'active' || g.status === 'reserve';
+  const counted = row => pendingIn(row).some(g => inLineup(g) && countsGame(row, g, today, opts));
+  const lineupNow = all.map(([r]) => r).filter(r => { const c = currentStatusId(r, today); return c === '1' || c === '2'; });
+  const out = [];
+  for (const [row, goalie] of all) {
+    const pending = pendingIn(row);
+    if (!pending.length || pending.some(inLineup)) continue;
+    const statusId = currentStatusId(row, today) || pending[pending.length - 1].statusId || null;
+    const statusName = statusLabel(names, statusId), short = statusShort(statusName);
+    const base = { id: row.id, name: row.shortName || row.name, statusId, statusName, short };
+    if (goalie) base.goalie = true;
+    const eligible = row.eligible || [];
+    const cleared = eligible.length ? !eligible.includes(String(statusId)) : (row.flag === null || row.flag === undefined);
+    if (cleared) { out.push(Object.assign(base, { kind: 'cleared', date: null, games: pending.length })); continue; }
+    const date = opts.returnDates ? effectiveReturnDate(row, today) : null;
+    if (!date || date > period.end) continue;
+    const games = pending.filter(g => g.day >= date).length;
+    if (!games) continue;
+    const swapCandidates = lineupNow.filter(r => r !== row && (r.eligible || []).includes(String(statusId)) && !counted(r))
+      .map(r => ({ name: r.shortName || r.name, flagWord: FLAG_WORD[r.flag] || 'no flag' }));
+    out.push(Object.assign(base, { kind: 'back', date, games, swapCandidates }));
+  }
+  return out;
+}
+function formatOffLineup(e) {
+  const n = e.games + (e.games === 1 ? ' game' : ' games') + (e.goalie ? ' (G)' : '');
+  if (e.kind === 'cleared') return 'On ' + e.short + ', no longer ' + e.short + '-eligible: ' + e.name + ', ' + n + ' this period, not counted \u2014 Fantrax no longer allows him there; the roster is illegal until he moves';
+  const swap = e.swapCandidates.length
+    ? 'free ' + e.short + ' swap: ' + e.swapCandidates.map(c => c.name + ' (' + c.flagWord + ')').join(', ') + ' could take his spot'
+    : 'no ' + e.short + '-eligible player to swap: activating him needs a drop';
+  return 'On ' + e.short + ', back this period: ' + e.name + ' ' + dayLabel(e.date) + ', ' + n + ', not counted \u00b7 ' + swap;
+}
+
+// 1.3.1: the panel's off-lineup sections for one day — one per status, in order of first appearance, titled
+// "<status>, could play" when any of its entries is cleared, else "<status>, expected back".
+function offSections(off) {
+  const out = [];
+  for (const o of off || []) {
+    let sec = out.find(x => x.statusName === o.statusName);
+    if (!sec) { sec = { statusName: o.statusName, entries: [] }; out.push(sec); }
+    sec.entries.push(o);
+  }
+  return out.map(sec => ({ title: sec.statusName + (sec.entries.some(o => o.kind === 'cleared') ? ', could play' : ', expected back'), entries: sec.entries }));
+}
+
 // The week panel's model: for each period day, the active slots in lineup order (kind game / idle / open / out), the
 // goalie slots apart, the reserve players who have a game that day (bench), and counts. A day whose lineup was not
 // loaded has slots === null. `games` counts active games by healthy players over the period, per group.
@@ -335,12 +422,20 @@ function weekView(team, now, opts = {}) {
   const games = { skaters: 0, goalies: 0 };
   // 1.3.0: kind of a row's game that day — game / out / ret (counted because of its expected return date)
   const gameKind = row => !countsGame(row, { day }, today, opts) ? 'out' : (opts.returnDates && effectiveReturnDate(row, today)) ? 'ret' : 'game';
+  // 1.3.1: off-lineup entries (IR etc.) by row id; listed per day from their date (back) or every day (cleared), never counted
+  const offById = {};
+  for (const e of offLineup(team, now, opts)) offById[e.id] = e;
+  const offFor = d => Object.keys(offById).map(id => {
+    const e = offById[id], row = rowById[id], game = row && row.games.find(g => g.day === d && g.statusId && g.status !== 'active' && g.status !== 'reserve');
+    if (!game || !isPending(game, today, now) || (e.kind === 'back' && d < e.date)) return null;   // pending days only, like the strip line's count
+    return { pos: (row.pos || '').split(',')[0].trim(), id, name: row.name, shortName: row.shortName || row.name, opp: game.opp, time: game.time, start: game.start, tag: row.tag, returnText: row.returnText || null, statusName: e.statusName, short: e.short, kind: e.kind };
+  }).filter(Boolean).sort((a, b) => (a.start && b.start ? a.start - b.start : a.start ? -1 : b.start ? 1 : 0) || a.name.localeCompare(b.name));
   let day = null;
   const days = team.period.days.map(d => {
     day = d;
     const lineup = team.lineups && team.lineups[day];
     const state = day < today ? 'past' : day === today ? 'today' : 'future';
-    if (!lineup) return { day, label: dayLabel(day), state, slots: null, goalies: null, bench: [], counts: { playing: 0, idle: 0, open: 0, out: 0, ret: 0 } };
+    if (!lineup) return { day, label: dayLabel(day), state, slots: null, goalies: null, bench: [], off: [], counts: { playing: 0, idle: 0, open: 0, out: 0, ret: 0 } };
     const slots = [], goalies = [], bench = [], counts = { playing: 0, idle: 0, open: 0, out: 0, ret: 0 };
     for (const s of lineup.slots) {
       const row = s.id ? rowById[s.id] : null;
@@ -359,7 +454,7 @@ function weekView(team, now, opts = {}) {
       }
     }
     bench.sort((a, b) => (a.start && b.start ? a.start - b.start : a.start ? -1 : b.start ? 1 : 0) || a.name.localeCompare(b.name));
-    return { day, label: dayLabel(day), state, slots, goalies, bench, counts };
+    return { day, label: dayLabel(day), state, slots, goalies, bench, off: offFor(day), counts };
   });
   return { days, games };
 }
@@ -481,11 +576,11 @@ async function loadTeam(leagueId, { teamId, period, day }, fetchImpl, now, retry
     missing = missing.filter(d => d > until);
   }
   for (const group of ['skaters', 'goalies']) for (const r of rows[group]) r.games.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
-  const statusByDay = {}, lineups = {};
-  dayData.forEach((d, i) => { const l = parseDayLineup(d); lineups[lineupDays[i]] = l; statusByDay[lineupDays[i]] = l.statuses; });
-  return { teamId: g.teamId, teamName: g.teamName, period: p, lineups, groups: {
-    skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay) },
-    goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay) },
+  const statusByDay = {}, detailByDay = {}, lineups = {}, statusNames = {};
+  dayData.forEach((d, i) => { const l = parseDayLineup(d); lineups[lineupDays[i]] = l; statusByDay[lineupDays[i]] = l.statuses; detailByDay[lineupDays[i]] = l.detail; Object.assign(statusNames, l.statusNames); });
+  return { teamId: g.teamId, teamName: g.teamName, period: p, lineups, statusNames, groups: {
+    skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay, detailByDay) },
+    goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay, detailByDay) },
   } };
 }
 
@@ -610,6 +705,16 @@ function buildEffectLines(team, now) {
   }
   return lines;
 }
+// 1.3.1: one blue line per off-lineup entry (IR players back this period, or in IR with no injury flag); never counted.
+const OFF_COLOR = '#93c5fd';
+function buildOffLines(team, now, opts) {
+  const rows = [].concat(team.groups.skaters.rows, team.groups.goalies.rows);
+  return offLineup(team, now, opts).map(e => {
+    const row = rows.find(r => r.id === e.id), text = formatOffLineup(e), i = text.indexOf(e.name);
+    const kids = i >= 0 ? [text.slice(0, i), el('span', { title: (row && row.returnText) || (row && row.tag && row.tag.tip) || '', text: e.name }), text.slice(i + e.name.length)] : [text];
+    return el('div', { style: 'color:' + OFF_COLOR, 'data-fgt-line': 'off' }, kids);
+  });
+}
 function buildTable(kind, key, team, now, opts) {
   const on = !!(opts && opts.returnDates);
   const head = el('tr', { style: 'color:' + COLORS.muted }, [el('th', { style: 'text-align:left;padding:1px 6px;font-weight:normal;white-space:nowrap', text: team.period.start.slice(5) + ' – ' + team.period.end.slice(5) })]
@@ -624,10 +729,8 @@ function buildTable(kind, key, team, now, opts) {
       el('td', { style: 'padding:1px 6px;text-align:left;white-space:nowrap;color:' + color, text: formatStatus(r.status) })]);
   });
   const parts = [head].concat(rows);
-  if (on) {
-    const lines = buildEffectLines(team, now);
-    if (lines.length) parts.push(el('tr', {}, [el('td', { colspan: '7', style: 'padding:3px 6px 1px;font:11px/1.5 sans-serif;white-space:normal;text-align:left' }, lines)]));
-  }
+  const lines = (on ? buildEffectLines(team, now) : []).concat(buildOffLines(team, now, opts));
+  if (lines.length) parts.push(el('tr', {}, [el('td', { colspan: '7', style: 'padding:3px 6px 1px;font:11px/1.5 sans-serif;white-space:normal;text-align:left' }, lines)]));
   return el('table', { 'data-fgt': kind, 'data-fgt-key': key, style: 'font:12px/1.4 sans-serif;border-collapse:collapse;margin:4px 0;color:#e5e7eb' }, parts);
 }
 
@@ -782,6 +885,9 @@ const WEEK_CSS = `
 .fgt-tag-ret{background:rgba(196,181,253,.22);color:#c4b5fd}
 .fgt-bench.fgt-ret{opacity:.8}
 .fgt-bench.fgt-out .fgt-nm,.fgt-bench.fgt-out .fgt-gm{color:#6b7386;text-decoration:line-through;text-decoration-color:#4b5163}
+.fgt-tag-off{background:rgba(147,197,253,.18);color:#93c5fd}
+.fgt-offrow .fgt-nm{color:#93c5fd}
+.fgt-offrow .fgt-gm{color:#8b93a7}
 `;
 function ensureWeekStyle() {
   if (document.getElementById('fgt-style')) return;
@@ -818,6 +924,7 @@ function slotLine(s, extraClass) {
     kids.push(el('span', { class: 'fgt-nm', text: s.shortName, title: s.name }));
     const extra = s.returnText ? ' · ' + s.returnText : '';
     if (s.kind === 'ret') kids.push(el('span', { class: 'fgt-tag fgt-tag-ret', text: 'RET', title: (s.tag ? s.tag.text : 'flagged') + extra }));   // 1.3.0: counted from the expected return date
+    else if (s.short) kids.push(el('span', { class: 'fgt-tag fgt-tag-off', text: s.short, title: (s.tag ? s.tag.tip || s.tag.text : 'no injury flag') + extra }));   // 1.3.1: an off-lineup (IR) row, not counted
     else if (s.tag) kids.push(el('span', { class: 'fgt-tag fgt-tag-' + s.tag.kind, text: s.tag.text, title: (s.tag.tip || s.tag.text) + extra }));
     kids.push(el('span', { class: 'fgt-gm', text: s.kind === 'out' ? s.opp : (s.opp + ' ' + s.time).trim() }));   // an out player's start time is noise
   }
@@ -849,6 +956,10 @@ function buildWeekPanel(key, team, now, opts) {
       for (const s of d.slots) kids.push(slotLine(s));
       if (d.goalies.length) { kids.push(el('div', { class: 'fgt-gsep' })); for (const s of d.goalies) kids.push(slotLine(s)); }
       if (d.bench.length) { kids.push(el('div', { class: 'fgt-sec', text: 'Bench, has a game' })); for (const s of d.bench) kids.push(slotLine(Object.assign({ kind: 'game' }, s), 'fgt-bench')); }   // a bench entry's own kind (out / ret, 1.3.0) wins
+      for (const sec of offSections(d.off)) {   // 1.3.1: IR (or other off-lineup) players who could play that day; never counted
+        kids.push(el('div', { class: 'fgt-sec', text: sec.title }));
+        for (const o of sec.entries) kids.push(slotLine(Object.assign({}, o, { kind: 'game' }), 'fgt-offrow'));
+      }
     }
     return el('div', { class: 'fgt-col fgt-' + d.state }, kids);
   }));
@@ -861,12 +972,15 @@ function buildWeekPanel(key, team, now, opts) {
     el('span', {}, [tag('out', 'OUT'), ' / ', tag('out', 'IR'), ' / ', tag('out', 'SUSP'), ' out, on IR, suspended: struck and not counted']),
     el('span', {}, [tag('note', 'DTD'), ' / ', tag('note', 'MINORS'), ' day-to-day, in the minors: shown, still counted (hover for Fantrax\'s note)']),
   ];
+  const offStatus = Object.keys(team.statusNames || {}).filter(id => id !== '1' && id !== '2').map(id => team.statusNames[id])[0];   // 1.3.1
+  const offLegend = offStatus ? [el('span', {}, [tag('off', statusShort(offStatus)), ' on ' + statusShort(offStatus) + ' with a return date this period (from that date) or with no injury flag (every day): not counted anywhere'])] : [];
   const legend = el('div', { class: 'fgt-legend' }, [
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'background:#8fbcff' }), 'slot filled, plays that day']),
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'background:#2a2e3c;border:1px solid #4b5163' }), 'slot empty: its player has no game (name in grey)']),
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'border:1px dashed rgba(251,191,36,.7)' }), 'slot open: nobody in it (a change carries forward to later days)']),
   ].concat(tagLines, [
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'background:#4b5163' }), 'on reserve that day with a game']),
+  ], offLegend, [
     el('span', { text: 'dimmed column = already played' }),
   ]));
   body.appendChild(cols); body.appendChild(legend);
@@ -1012,8 +1126,8 @@ function start() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
-    parsePeriodList, parseGamesPerPos, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses,
-    compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, weekView, shouldRender, isCurrent, parseRoute,
+    parsePeriodList, parseGamesPerPos, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses, statusLabel, statusShort,
+    compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, parseRoute,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }

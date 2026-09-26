@@ -32,12 +32,21 @@ Shows games played against the league's games-played cap, skaters and goalies se
   the table say who moved them and why; in the Week panel a `RET` tag marks the days a player is counted because of
   his date. The dates are Fantrax's estimates and are often placeholders, so treat this as a second opinion, not a
   fact. One extra read-only request per flagged player, cached ten minutes.
+- **Players on IR** (since 1.3.1): a player in an IR slot who is expected back this period gets his own blue line under
+  the table ("On IR, back this period: Larkin Fri 10/2, 2 games, not counted") naming the players Fantrax says could
+  take his IR spot without losing any counted games, or saying that activating him needs a drop; the Week panel lists
+  him under "Inj Res, expected back" from his date. A player still in an IR slot whom Fantrax no longer allows there
+  (his roster is illegal until he moves) gets a line too. None of this changes any number: IR games are never counted, because activating a player costs a
+  roster move.
 
 Played and Max come from Fantrax's own Min/Max view, so they match what Fantrax enforces. Players on IR, tagged
 Out or suspended never count; day-to-day players do. A game that has started today no longer counts as scheduled (whether Fantrax
 adds it to Played before the final horn is a first-week check; if a started game's schedule cell loses its start time,
 it will look scheduled until that is confirmed). Numbers refresh every five
 minutes (one games-played call, one schedule call and one lineup call per day of the period, all read-only), whenever you change period, team or page, when you save a lineup, and when you come back to the tab.
+
+The script assumes a hockey league (skaters and goalies as the two games groups) and reads everything else — periods,
+caps, lineups, roster statuses and IR eligibility — from Fantrax's responses for the league on screen.
 
 Install: Tampermonkey → open the raw file → Install. Updates arrive automatically. The script only runs on
 `www.fantrax.com/fantasy/league/*` (never the draft room), calls only Fantrax's read-only roster endpoints, and needs
