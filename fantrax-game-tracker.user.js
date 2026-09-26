@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.2.1
-// @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages
+// @version      1.3.0
+// @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
 // @exclude      https://www.fantrax.com/fantasy/league/*/draft*
@@ -18,6 +18,8 @@
  * runs when a `document` exists. Read-only: the script never calls a Fantrax write method.
  * 1.2.0 adds, on the roster page, a "Week" panel (every lineup slot per period day with that day's game, the bench
  * players who play, open slots and injury tags) and recolours the Schedule - Week cells by each day's real lineup.
+ * 1.3.0 adds an opt-in that counts flagged players from Fantrax's expected return date (getPlayerProfile, read-only),
+ * with the players it moved listed under the tables.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -27,6 +29,7 @@
 // 35 trade block. The first three mean "will not play"; day-to-day and minors players count as available (shown as a note).
 const INJURY_ICON_TYPES = new Set(['30', '2', '6']);
 const ICON_TAGS = [['2', 'IR', 'out'], ['30', 'OUT', 'out'], ['6', 'SUSP', 'out'], ['1', 'DTD', 'note'], ['4', 'MINORS', 'note']];   // worst first ('MIN' would read as Minnesota)
+const FLAG_BY_ICON = { '2': 'ir', '30': 'out', '6': 'susp', '1': 'dtd' };   // 1.3.0: the injury flag a row carries (same order as ICON_TAGS)
 // Slot position ids in Fantrax NHL leagues (2026-09-24), used only when a response does not name a slot itself.
 const POS_FALLBACK = { 201: 'G', 202: 'D', 203: 'LW', 204: 'RW', 206: 'C', 208: 'Skt' };
 const GROUP_BY_SC = { 2010: 'skaters', 2020: 'goalies' };      // scGroup ids in getTeamRosterInfo SCHEDULE_PERIOD
@@ -57,6 +60,20 @@ function dayFromIndex(seasonStart, n) { return addDays(seasonStart, n - 1); }
 function indexFromDay(seasonStart, day) { const [y, m, d] = day.split('-').map(Number), [sy, sm, sd] = seasonStart.split('-').map(Number); return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(sy, sm - 1, sd)) / 86400000) + 1; }
 function seasonStart(periods) { return periods.reduce((a, p) => (a === null || p.start < a ? p.start : a), null); }
 function periodForDay(periods, day) { return periods.find(p => day >= p.start && day <= p.end) || null; }
+// 1.3.0: Fantrax's injury report line ("Expected to return on Sat Sep 26 - <i>Out Indefinitely.</i>", no year) →
+// "YYYY-MM-DD" or null. The year is whichever of last / this / next year puts the date nearest to today (a stale
+// "Sep 29" read in January is last September, a "Feb 1" read in October is next February); a wrong pick counts
+// nothing this period either way, it only changes the "passed" / "after this period" wording.
+function parseReturnDate(injuryMsgs, today) {
+  const first = Array.isArray(injuryMsgs) ? injuryMsgs[0] : null;
+  if (typeof first !== 'string') return null;
+  const m = /Expected to return on \w+ ([A-Z][a-z]{2}) (\d{1,2})/.exec(first.replace(/<[^>]*>/g, ''));
+  if (!m || !(m[1] in MONTHS)) return null;
+  const [ty, tm, td] = String(today).split('-').map(Number);
+  const mo = MONTHS[m[1]], d = Number(m[2]), t = Date.UTC(ty, tm - 1, td);
+  const year = [ty - 1, ty, ty + 1].reduce((best, y) => Math.abs(Date.UTC(y, mo - 1, d) - t) < Math.abs(Date.UTC(best, mo - 1, d) - t) ? y : best, ty);
+  return ymd(year, mo, d);
+}
 
 // ---------------------------------------------------------------- logic: parsers
 
@@ -80,6 +97,13 @@ function iconTag(icons) {
     const ic = list.find(i => String(i.typeId) === id);
     if (ic) return { text, kind, tip: String(ic.tooltip || '') };
   }
+  return null;
+}
+
+// The injury flag of a scorer ("out" | "ir" | "susp" | "dtd"), worst first, or null.
+function rowFlag(icons) {
+  const list = icons || [];
+  for (const [id] of ICON_TAGS) { if (FLAG_BY_ICON[id] && list.some(i => String(i.typeId) === id)) return FLAG_BY_ICON[id]; }
   return null;
 }
 
@@ -151,8 +175,9 @@ function parseScheduleRows(data, period) {
         const cell = row.cells && row.cells[c.index];
         if (cell && cell.eventId) games.push(Object.assign({ day: c.day, start: parseStart(cell.content, c.day) }, parseGameText(cell.content)));
       }
-      out[group].push({ id: row.scorer.scorerId || '', name: row.scorer.name || row.scorer.shortName || '', pos: row.scorer.posShortNames || '',
-        injured: (row.scorer.icons || []).some(i => INJURY_ICON_TYPES.has(String(i.typeId))), tag: iconTag(row.scorer.icons), games });
+      out[group].push({ id: row.scorer.scorerId || '', name: row.scorer.name || row.scorer.shortName || '', shortName: row.scorer.shortName || row.scorer.name || '', pos: row.scorer.posShortNames || '',
+        injured: (row.scorer.icons || []).some(i => INJURY_ICON_TYPES.has(String(i.typeId))), tag: iconTag(row.scorer.icons), flag: rowFlag(row.scorer.icons),
+        returnDate: null, returnText: null, games });
     }
   }
   return out;
@@ -214,15 +239,25 @@ function isPending(game, today, now) {
   return game.start === null || game.start.getTime() > now.getTime();
 }
 
-function compute(group, period, now) {
+// 1.3.0: a row's expected return date, or null when it has none or it has already passed (a stale placeholder while
+// the flag is still on: the flag is the reliable part). A date equal to today counts from today.
+function effectiveReturnDate(row, today) { return row.returnDate && row.returnDate >= today ? row.returnDate : null; }
+// Does this game count (lineup status aside)? Off: healthy rows only, as in 1.2.1. On: a flagged row with a date counts
+// from that date (Out / IR / Suspended gain their later games, Day-to-day loses the earlier ones); no date → as off.
+function countsGame(row, game, today, opts) {
+  if (!opts || !opts.returnDates) return !row.injured;
+  const date = effectiveReturnDate(row, today);
+  return date ? game.day >= date : !row.injured;
+}
+
+function compute(group, period, now, opts = {}) {
   const today = dayString(now);
   const active = {}, pending = {};
   for (const day of period.days) { active[day] = 0; pending[day] = 0; }
   let scheduled = 0, bench = 0;
   for (const row of group.rows) {
-    if (row.injured) continue;
     for (const g of row.games) {
-      if (!(g.day in active)) continue;
+      if (!(g.day in active) || !countsGame(row, g, today, opts)) continue;
       const status = g.status || 'ir';
       const p = isPending(g, today, now);
       if (status === 'active') { active[g.day]++; if (p) { scheduled++; pending[g.day]++; } }
@@ -254,30 +289,74 @@ function formatStatus(s) {
   return 'on track';
 }
 
+// 1.3.0: what the return-date option does to each flagged row with a pending game in the period.
+// Effect = {id, name, flag, date, delta, bench, reason}: delta = pending games counted with the option on minus off
+// (active and reserve days; ir never), bench = every counted game falls on a reserve day, reason only when delta is 0.
+const FLAG_WORD = { out: 'Out', ir: 'IR', susp: 'Suspended', dtd: 'DTD' };
+function shortDate(day) { const [, m, d] = day.split('-').map(Number); return m + '/' + d; }
+function explainGroup(group, period, now) {
+  const today = dayString(now), days = new Set(period.days), out = [];
+  for (const row of group.rows) {
+    if (!row.flag) continue;
+    const games = row.games.filter(g => days.has(g.day) && (g.status === 'active' || g.status === 'reserve') && isPending(g, today, now));
+    if (!games.length) continue;
+    const on = games.filter(g => countsGame(row, g, today, { returnDates: true })), off = games.filter(g => countsGame(row, g, today, {}));
+    const delta = on.length - off.length, date = row.returnDate, eff = effectiveReturnDate(row, today);
+    const changed = delta > 0 ? on.filter(g => !off.includes(g)) : off.filter(g => !on.includes(g));   // the games the option moved
+    let reason = null;
+    if (delta === 0) {
+      if (!date) reason = row.flag === 'susp' ? 'suspended, no date' : FLAG_WORD[row.flag] + ', no date';
+      else if (date < today) reason = shortDate(date) + ' passed, still ' + FLAG_WORD[row.flag];
+      else if (date > period.end) reason = shortDate(date) + ', after this period';
+      else if (row.flag === 'dtd' && date === today) reason = 'DTD, back today';
+      else if (row.flag !== 'dtd') reason = shortDate(date) + ', no game from then';
+      else reason = 'no game before the date';
+    }
+    out.push({ id: row.id, name: row.shortName || row.name, flag: row.flag, date: eff, delta, bench: changed.length > 0 && changed.every(g => g.status === 'reserve'), reason });
+  }
+  return out;
+}
+function explainTeam(team, now) {
+  const all = explainGroup(team.groups.skaters, team.period, now).concat(explainGroup(team.groups.goalies, team.period, now).map(e => Object.assign(e, { goalie: true })));
+  return { gained: all.filter(e => e.delta > 0), lost: all.filter(e => e.delta < 0), none: all.filter(e => e.delta === 0) };
+}
+function formatEffect(e) {
+  if (e.delta === 0) return e.name + ' ' + e.reason;
+  return e.name + ' ' + dayLabel(e.date) + ' ' + (e.delta > 0 ? '+' + e.delta : '\u2212' + (-e.delta)) + (e.goalie ? ' (G)' : '') + (e.bench ? ' (bench)' : '');
+}
+
 // The week panel's model: for each period day, the active slots in lineup order (kind game / idle / open / out), the
 // goalie slots apart, the reserve players who have a game that day (bench), and counts. A day whose lineup was not
 // loaded has slots === null. `games` counts active games by healthy players over the period, per group.
-function weekView(team, now) {
+function weekView(team, now, opts = {}) {
   const today = dayString(now);
   const rowById = {};
   for (const g of ['skaters', 'goalies']) for (const r of team.groups[g].rows) rowById[r.id] = r;
   const games = { skaters: 0, goalies: 0 };
-  const days = team.period.days.map(day => {
+  // 1.3.0: kind of a row's game that day — game / out / ret (counted because of its expected return date)
+  const gameKind = row => !countsGame(row, { day }, today, opts) ? 'out' : (opts.returnDates && effectiveReturnDate(row, today)) ? 'ret' : 'game';
+  let day = null;
+  const days = team.period.days.map(d => {
+    day = d;
     const lineup = team.lineups && team.lineups[day];
     const state = day < today ? 'past' : day === today ? 'today' : 'future';
-    if (!lineup) return { day, label: dayLabel(day), state, slots: null, goalies: null, bench: [], counts: { playing: 0, idle: 0, open: 0, out: 0 } };
-    const slots = [], goalies = [], bench = [], counts = { playing: 0, idle: 0, open: 0, out: 0 };
+    if (!lineup) return { day, label: dayLabel(day), state, slots: null, goalies: null, bench: [], counts: { playing: 0, idle: 0, open: 0, out: 0, ret: 0 } };
+    const slots = [], goalies = [], bench = [], counts = { playing: 0, idle: 0, open: 0, out: 0, ret: 0 };
     for (const s of lineup.slots) {
       const row = s.id ? rowById[s.id] : null;
       const game = row ? row.games.find(g => g.day === day) : null;
-      const base = { pos: s.pos, id: s.id, name: s.name, shortName: s.shortName || s.name, group: s.group, opp: game ? game.opp : '', time: game ? game.time : '', start: game ? game.start : null, tag: row ? row.tag : null };
+      const base = { pos: s.pos, id: s.id, name: s.name, shortName: s.shortName || s.name, group: s.group, opp: game ? game.opp : '', time: game ? game.time : '', start: game ? game.start : null, tag: row ? row.tag : null, returnText: row ? row.returnText || null : null };
       if (s.status === 'active') {
         let kind;
-        if (!s.id) kind = 'open'; else if (!game) kind = 'idle'; else if (row.injured) kind = 'out'; else kind = 'game';
-        if (s.group !== 'goalies') counts[kind === 'game' ? 'playing' : kind]++;   // the header counts skater slots; goalies are listed apart
-        if (kind === 'game') games[s.group]++;
+        if (!s.id) kind = 'open'; else if (!game) kind = 'idle'; else kind = gameKind(row);
+        if (s.group !== 'goalies') { counts[kind === 'game' ? 'playing' : kind]++; if (kind === 'ret') counts.playing++; }   // the header counts skater slots; goalies are listed apart
+        if (kind === 'game' || kind === 'ret') games[s.group]++;
         (s.group === 'goalies' ? goalies : slots).push(Object.assign(base, { kind }));
-      } else if (s.status === 'reserve' && game && !row.injured) bench.push(base);
+      } else if (s.status === 'reserve' && game) {
+        const kind = gameKind(row);
+        // a flagged reserve player is listed only when a return date is in play (struck before it, counted from it)
+        if (kind !== 'out' || (opts.returnDates && effectiveReturnDate(row, today))) bench.push(Object.assign(base, { kind }));
+      }
     }
     bench.sort((a, b) => (a.start && b.start ? a.start - b.start : a.start ? -1 : b.start ? 1 : 0) || a.name.localeCompare(b.name));
     return { day, label: dayLabel(day), state, slots, goalies, bench, counts };
@@ -322,19 +401,20 @@ function parseRoute(href) {
 
 // ---------------------------------------------------------------- data
 
-const API_TIMEOUT_MS = 20000, CACHE_TTL_MS = 60000, RETRY_DELAY_MS = 1500;
+const API_TIMEOUT_MS = 20000, CACHE_TTL_MS = 60000, RETRY_DELAY_MS = 1500, PROFILE_TTL_MS = 600000;
 
 // POST /fxpa/req?leagueId=<id> with {msgs:[{method,data}, …]} and return one data object per message. Fantrax runs
 // the messages of one request in series, so slow views go in separate parallel requests. One automatic retry.
 // fetchImpl and retryDelay are for tests.
-async function apiMulti(leagueId, msgs, fetchImpl, retryDelay) {
-  try { return await apiOnce(leagueId, msgs, fetchImpl); }
+// lenient (1.3.0, profile batches): a message answered without data becomes null instead of failing the whole request.
+async function apiMulti(leagueId, msgs, fetchImpl, retryDelay, lenient) {
+  try { return await apiOnce(leagueId, msgs, fetchImpl, lenient); }
   catch (e) {
     await new Promise(r => setTimeout(r, retryDelay === undefined ? RETRY_DELAY_MS : retryDelay));
-    return apiOnce(leagueId, msgs, fetchImpl);
+    return apiOnce(leagueId, msgs, fetchImpl, lenient);
   }
 }
-async function apiOnce(leagueId, msgs, fetchImpl) {
+async function apiOnce(leagueId, msgs, fetchImpl, lenient) {
   const doFetch = fetchImpl || fetch;
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const killer = ctl ? setTimeout(() => ctl.abort(), API_TIMEOUT_MS) : null;
@@ -345,7 +425,8 @@ async function apiOnce(leagueId, msgs, fetchImpl) {
     });
     if (!r.ok) throw new Error('HTTP ' + r.status + ' from ' + msgs.map(m => m.method).join(','));
     const j = await r.json();
-    const out = msgs.map((m, i) => j && j.responses && j.responses[i] && j.responses[i].data);
+    const out = msgs.map((m, i) => (j && j.responses && j.responses[i] && j.responses[i].data) || null);
+    if (lenient) return out;
     if (out.some(d => !d)) throw new Error('empty response for ' + msgs[out.findIndex(d => !d)].method);
     return out;
   } finally { if (killer) clearTimeout(killer); }
@@ -394,7 +475,7 @@ async function loadTeam(leagueId, { teamId, period, day }, fetchImpl, now, retry
     const until = addDays(missing[0], 6);
     for (const group of ['skaters', 'goalies']) for (const r of chunk[group]) {
       let target = rows[group].find(x => x.id === r.id);
-      if (!target) { target = { id: r.id, name: r.name, injured: r.injured, games: [] }; rows[group].push(target); }
+      if (!target) { target = { id: r.id, name: r.name, shortName: r.shortName, pos: r.pos, injured: r.injured, tag: r.tag, flag: r.flag, returnDate: null, returnText: null, games: [] }; rows[group].push(target); }
       for (const gm of r.games) if (gm.day >= missing[0] && gm.day <= until && !target.games.some(x => x.day === gm.day)) target.games.push(gm);
     }
     missing = missing.filter(d => d > until);
@@ -409,18 +490,63 @@ async function loadTeam(leagueId, { teamId, period, day }, fetchImpl, now, retry
 }
 
 const cache = new Map();
-function clearCache() { cache.clear(); }
+function clearCache() { cache.clear(); profileCache.clear(); }
 function cacheKey(leagueId, teamId, period, day) { return leagueId + '|' + (teamId || 'me') + '|' + (period === null || period === undefined ? 'cur' : period) + '|' + (day || ''); }
-function cachedLoadTeam(leagueId, args, fetchImpl, now, retryDelay) {
+// allowStale (1.3.0): serve an expired entry rather than reload — the option toggle re-renders what is on screen.
+function cachedLoadTeam(leagueId, args, fetchImpl, now, retryDelay, allowStale) {
   const key = cacheKey(leagueId, args.teamId, args.period, args.day);
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.promise;
+  if (hit && (allowStale || Date.now() - hit.at < CACHE_TTL_MS)) return hit.promise;
   const entry = { at: Date.now(), promise: loadTeam(leagueId, args, fetchImpl, now, retryDelay) };
   cache.set(key, entry);
   // a load asked by lineup day (or Fantrax's default) is the same data as its resolved scoring period
   entry.promise.then(team => { cache.set(cacheKey(leagueId, args.teamId, team.period.id, null), entry); },
     () => { for (const [k, v] of cache) if (v === entry) cache.delete(k); });
   return entry.promise;
+}
+
+// ---- 1.3.0: expected return dates. getPlayerProfile {leagueId, playerId} (read-only; what the web app calls when a
+// player card opens) → sectionContent.OVERVIEW.injuryInfo.injuryMsgs[0] = "Expected to return on Sat Sep 26 - <i>Out
+// Indefinitely.</i>" (verified 2026-09-26: every Out / IR-list / Day-to-day player carried one, Suspended none).
+// ~22 KB per player, so one batched request per team and a 10-minute cache per player; a failure is null, not cached.
+const profileCache = new Map();
+function profileMsg(leagueId, scorerId) { return { method: 'getPlayerProfile', data: { leagueId, playerId: scorerId } }; }
+// The report lives in sectionContent.OVERVIEW.injuryInfo (seen live 2026-09-26); any section holding one is accepted.
+function injuryText(d) {
+  const sc = (d && d.sectionContent) || {};
+  const info = sc.injuryInfo || Object.keys(sc).map(k => sc[k] && sc[k].injuryInfo).find(Boolean), msgs = info && info.injuryMsgs;
+  return Array.isArray(msgs) && typeof msgs[0] === 'string' ? msgs[0].replace(/<[^>]*>/g, '') : null;
+}
+// {scorerId: text | null} for the given ids, one request for the uncached ones.
+function loadReturnTexts(leagueId, scorerIds, fetchImpl, retryDelay) {
+  const t = Date.now(), fresh = [];
+  for (const id of scorerIds) {
+    const key = leagueId + '|' + id, hit = profileCache.get(key);
+    if (!hit || t - hit.at >= PROFILE_TTL_MS) fresh.push(id);
+  }
+  if (fresh.length) {
+    const req = apiMulti(leagueId, fresh.map(id => profileMsg(leagueId, id)), fetchImpl, retryDelay, true).then(list => list.map(injuryText),
+      err => { console.warn(LOG, 'return dates', err); for (const id of fresh) profileCache.delete(leagueId + '|' + id); return fresh.map(() => null); });
+    fresh.forEach((id, i) => profileCache.set(leagueId + '|' + id, { at: t, promise: req.then(list => list[i]) }));
+  }
+  return Promise.all(scorerIds.map(id => profileCache.get(leagueId + '|' + id).promise)).then(texts => {
+    const out = {}; scorerIds.forEach((id, i) => { out[id] = texts[i]; }); return out;
+  });
+}
+const DATED_FLAGS = new Set(['out', 'ir', 'dtd']);   // Suspended players carry no date on Fantrax
+// A copy of `team` whose flagged rows carry returnText and returnDate; the same object when nothing is flagged.
+async function withReturnDates(leagueId, team, fetchImpl, now, retryDelay) {
+  const ids = [];
+  for (const g of ['skaters', 'goalies']) for (const r of team.groups[g].rows) if (DATED_FLAGS.has(r.flag) && r.id && !ids.includes(r.id)) ids.push(r.id);
+  if (!ids.length) return team;
+  const texts = await loadReturnTexts(leagueId, ids, fetchImpl, retryDelay), today = dayString(now || new Date());
+  const groups = {};
+  for (const g of ['skaters', 'goalies']) groups[g] = Object.assign({}, team.groups[g], { rows: team.groups[g].rows.map(r => {
+    if (!(r.id in texts)) return r;
+    const text = texts[r.id];
+    return Object.assign({}, r, { returnText: text, returnDate: parseReturnDate(text === null ? null : [text], today) });
+  }) });
+  return Object.assign({}, team, { groups });
 }
 
 // ---------------------------------------------------------------- DOM: shared
@@ -430,6 +556,7 @@ const SEL = {
   matchupHeads: 'header.scoring-table__row div.scoring-table__head',
   matchupBlock: 'league-livescoring-table-header',
   matchupName: 'header.scoring-header__name a',
+  matchupRow: 'header.scoring-table__row',   // the row holding the three heads; the 1.3.0 checkbox goes right before the first one
   // Roster page (2026-09-23)
   rosterRoot: 'app-league-team-roster',
   rosterHeadline: 'app-league-team-roster headline.fx-headline',
@@ -465,17 +592,43 @@ function marker(kind, key, text, onRetry) {
 function numCell(v, extraStyle) { return el('td', { style: 'padding:1px 6px;text-align:right;' + (extraStyle || ''), text: v === null ? '–' : String(v) }); }
 
 // The two-row Played / Max / Left / Sched / Potential / status table used on both pages.
-function buildTable(kind, key, team, now) {
+// 1.3.0: with the return-date option on, Sched / Potential cells that differ from the flag-only reading turn violet and
+// a footer lists every flagged player by effect (gained / lost / no change), each name carrying Fantrax's text on hover.
+const RET_COLOR = '#c4b5fd';
+const EFFECT_LINES = [['gained', 'Counted from the date:', RET_COLOR], ['lost', 'Day-to-day, not counted before the date:', COLORS.unused], ['none', 'No change:', '#8b93a7']];
+function buildEffectLines(team, now) {
+  const x = explainTeam(team, now), lines = [];
+  for (const [group, heading, color] of EFFECT_LINES) {
+    if (!x[group].length) continue;
+    const kids = [el('span', { style: 'color:#7c8497;margin-right:6px', text: heading })];
+    x[group].forEach((e, i) => {
+      if (i) kids.push(' · ');
+      const row = [].concat(team.groups.skaters.rows, team.groups.goalies.rows).find(r => r.id === e.id);
+      kids.push(el('span', { title: (row && row.returnText) || (row && row.tag && row.tag.tip) || '', text: formatEffect(e) }));
+    });
+    lines.push(el('div', { style: 'color:' + color, 'data-fgt-line': group }, kids));
+  }
+  return lines;
+}
+function buildTable(kind, key, team, now, opts) {
+  const on = !!(opts && opts.returnDates);
   const head = el('tr', { style: 'color:' + COLORS.muted }, [el('th', { style: 'text-align:left;padding:1px 6px;font-weight:normal;white-space:nowrap', text: team.period.start.slice(5) + ' – ' + team.period.end.slice(5) })]
     .concat(['Played', 'Max', 'Left', 'Sched', 'Potential', ''].map(h => el('th', { style: 'padding:1px 6px;text-align:right;font-weight:normal', text: h }))));
   const rows = ['skaters', 'goalies'].map(g => {
-    const r = compute(team.groups[g], team.period, now);
+    const r = compute(team.groups[g], team.period, now, opts);
+    const base = on ? compute(team.groups[g], team.period, now) : r;
     const color = statusColor(r.status);
+    const tint = (v, b) => on && v !== b ? 'color:' + RET_COLOR : '';
     return el('tr', {}, [el('td', { style: 'padding:1px 6px;text-align:left', text: g === 'skaters' ? 'Skaters' : 'Goalies' }),
-      numCell(r.played), numCell(r.max), numCell(r.left), numCell(r.scheduled), numCell(r.potential),
+      numCell(r.played), numCell(r.max), numCell(r.left), numCell(r.scheduled, tint(r.scheduled, base.scheduled)), numCell(r.potential, tint(r.potential, base.potential)),
       el('td', { style: 'padding:1px 6px;text-align:left;white-space:nowrap;color:' + color, text: formatStatus(r.status) })]);
   });
-  return el('table', { 'data-fgt': kind, 'data-fgt-key': key, style: 'font:12px/1.4 sans-serif;border-collapse:collapse;margin:4px 0;color:#e5e7eb' }, [head].concat(rows));
+  const parts = [head].concat(rows);
+  if (on) {
+    const lines = buildEffectLines(team, now);
+    if (lines.length) parts.push(el('tr', {}, [el('td', { colspan: '7', style: 'padding:3px 6px 1px;font:11px/1.5 sans-serif;white-space:normal;text-align:left' }, lines)]));
+  }
+  return el('table', { 'data-fgt': kind, 'data-fgt-key': key, style: 'font:12px/1.4 sans-serif;border-collapse:collapse;margin:4px 0;color:#e5e7eb' }, parts);
 }
 
 function removeOwn(container, kind) { for (const n of container.querySelectorAll('[data-fgt="' + kind + '"]')) n.remove(); }
@@ -492,6 +645,14 @@ function beginUpdate(container, kind, key, insert) {
 }
 function finishUpdate(container, kind, insert) { removeOwn(container, kind); insert(); }
 
+// 1.3.0: after a (cached) team load, read the option as of now and attach the return dates when it is on.
+function withDates(leagueId) {
+  return team => {
+    const opts = { returnDates: returnDatesOn() };
+    return (opts.returnDates ? withReturnDates(leagueId, team, undefined, new Date()) : Promise.resolve(team)).then(t => ({ team: t, opts }));
+  };
+}
+
 // ---------------------------------------------------------------- DOM: matchups page
 
 function teamIdFromHead(head) {
@@ -500,8 +661,14 @@ function teamIdFromHead(head) {
   return m ? m[1] : null;
 }
 
-function renderMatchups(route, force) {
+function renderMatchups(route, force, stale) {
   const heads = Array.from(document.querySelectorAll(SEL.matchupHeads));
+  const ctlKey = route.leagueId + '|' + (route.period === null ? 'cur' : route.period);
+  const firstRow = document.querySelector(SEL.matchupRow);
+  if (firstRow && heads.length && !document.querySelector('[data-fgt="retctl"][data-fgt-key="' + ctlKey + '"]')) {
+    for (const n of document.querySelectorAll('[data-fgt="retctl"]')) n.remove();
+    firstRow.insertAdjacentElement('beforebegin', buildReturnControl('matchups', ctlKey, () => renderMatchups(route, true, true)));
+  }
   for (const head of heads) {
     const teamId = teamIdFromHead(head), block = head.querySelector(SEL.matchupBlock);
     if (!teamId || !block) continue;
@@ -510,9 +677,9 @@ function renderMatchups(route, force) {
     if (!shouldRender(own.table || own.marker, key, force)) continue;
     beginUpdate(head, 'matchup', key, n => block.insertAdjacentElement('afterend', n));
     const stillWanted = () => head.isConnected && block.isConnected && isCurrent(ownNodes(head, 'matchup').marker, key);
-    cachedLoadTeam(route.leagueId, { teamId, period: route.period, day: null }).then(team => {
+    cachedLoadTeam(route.leagueId, { teamId, period: route.period, day: null }, undefined, undefined, undefined, stale).then(withDates(route.leagueId)).then(({ team, opts }) => {
       if (!stillWanted()) return;
-      finishUpdate(head, 'matchup', () => block.insertAdjacentElement('afterend', buildTable('matchup', key, team, new Date())));
+      finishUpdate(head, 'matchup', () => block.insertAdjacentElement('afterend', buildTable('matchup', key, team, new Date(), opts)));
     }, err => {
       console.warn(LOG, 'matchups', teamId, err);
       if (!stillWanted()) return;
@@ -550,7 +717,7 @@ function footerRow(label, values, key, widths) {
   return el('div', { class: 'i-table__row', 'data-fgt': 'perday', 'data-fgt-key': key }, cells);
 }
 
-function renderPerDay(team, key, now) {
+function renderPerDay(team, key, now, opts) {
   for (const table of document.querySelectorAll(SEL.rosterTables)) {
     const headerRow = table.querySelector(SEL.rosterHeaderRow), body = table.querySelector(SEL.rosterBody);
     if (!headerRow || !body) continue;
@@ -559,7 +726,7 @@ function renderPerDay(team, key, now) {
     if (!group) continue;
     const { widths, days } = dayCellIndexes(headerRow, team.period);
     if (days.length === 0) continue;                       // not the Schedule - Week view
-    const r = compute(team.groups[group], team.period, now);
+    const r = compute(team.groups[group], team.period, now, opts);
     const byDay = new Map(r.perDay.map(d => [d.day, d]));
     const active = new Map(), cumulative = new Map();
     for (const { index, day } of days) {
@@ -610,6 +777,11 @@ const WEEK_CSS = `
 .fgt-none{color:#4b5163;font-style:italic}
 .fgt-legend{padding:5px 10px;border-top:1px solid #2c3140;color:#7c8497;font-size:11px;display:flex;gap:16px;flex-wrap:wrap}
 .fgt-sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+.fgt-ret{background:rgba(196,181,253,.10);border-radius:3px;margin:0 -4px;padding:1px 4px}
+.fgt-ret .fgt-nm{color:#c4b5fd}
+.fgt-tag-ret{background:rgba(196,181,253,.22);color:#c4b5fd}
+.fgt-bench.fgt-ret{opacity:.8}
+.fgt-bench.fgt-out .fgt-nm,.fgt-bench.fgt-out .fgt-gm{color:#6b7386;text-decoration:line-through;text-decoration-color:#4b5163}
 `;
 function ensureWeekStyle() {
   if (document.getElementById('fgt-style')) return;
@@ -620,20 +792,41 @@ const WEEK_COLLAPSED_KEY = 'fgt-week-collapsed';
 function weekCollapsed() { try { return localStorage.getItem(WEEK_COLLAPSED_KEY) === '1'; } catch (e) { return false; } }
 function setWeekCollapsed(v) { try { localStorage.setItem(WEEK_COLLAPSED_KEY, v ? '1' : '0'); } catch (e) { /* private mode */ } }
 
+// ---- 1.3.0: the "count from the expected return date" option, one setting for the whole script
+const RETURN_DATES_KEY = 'fgt-return-dates';
+function returnDatesOn() { try { return localStorage.getItem(RETURN_DATES_KEY) === '1'; } catch (e) { return false; } }
+function setReturnDatesOn(v) { try { localStorage.setItem(RETURN_DATES_KEY, v ? '1' : '0'); } catch (e) { /* private mode */ } }
+const RETURN_LABEL = 'Count players from their Fantrax expected return date';
+const RETURN_OFF_NOTE = 'off: Out / IR / Suspended never count, Day-to-day always counts';
+// A checkbox + label (+ on the roster page a muted note while off). onChange(checked) runs after the setting is saved.
+function buildReturnControl(page, key, onChange) {
+  const id = 'fgt-ret-' + page, on = returnDatesOn();
+  const box = el('input', { type: 'checkbox', id, style: 'width:14px;height:14px;margin:0;accent-color:#5b8def;vertical-align:-2px' });
+  box.checked = on;
+  const note = page === 'roster' ? el('small', { style: 'color:#7c8497;font-size:11px;margin-left:8px' + (on ? ';display:none' : ''), text: RETURN_OFF_NOTE }) : null;
+  box.addEventListener('change', () => { setReturnDatesOn(box.checked); if (note) note.style.display = box.checked ? 'none' : ''; try { onChange(box.checked); } catch (e) { console.warn(LOG, 'return dates toggle', e); } });
+  const kids = [box, el('label', { for: id, style: 'margin-left:6px;cursor:pointer', text: RETURN_LABEL })];
+  if (note) kids.push(note);
+  return el('div', { 'data-fgt': 'retctl', 'data-fgt-key': key, style: 'font:12px/1.4 sans-serif;color:#c4c9d6;margin:4px 0' }, kids);
+}
+
 function slotLine(s, extraClass) {
   const kids = [el('span', { class: 'fgt-pos', text: s.pos })];
   if (s.kind === 'open') kids.push(el('span', { class: 'fgt-nm', text: 'open slot' }), el('span', { class: 'fgt-gm', text: '' }));
   else if (s.kind === 'idle') kids.push(el('span', { class: 'fgt-nm', text: 'empty' }), el('span', { class: 'fgt-gm', text: s.shortName, title: s.name + ': no game' }));
   else {
     kids.push(el('span', { class: 'fgt-nm', text: s.shortName, title: s.name }));
-    if (s.tag) kids.push(el('span', { class: 'fgt-tag fgt-tag-' + s.tag.kind, text: s.tag.text, title: s.tag.tip || s.tag.text }));
+    const extra = s.returnText ? ' · ' + s.returnText : '';
+    if (s.kind === 'ret') kids.push(el('span', { class: 'fgt-tag fgt-tag-ret', text: 'RET', title: (s.tag ? s.tag.text : 'flagged') + extra }));   // 1.3.0: counted from the expected return date
+    else if (s.tag) kids.push(el('span', { class: 'fgt-tag fgt-tag-' + s.tag.kind, text: s.tag.text, title: (s.tag.tip || s.tag.text) + extra }));
     kids.push(el('span', { class: 'fgt-gm', text: s.kind === 'out' ? s.opp : (s.opp + ' ' + s.time).trim() }));   // an out player's start time is noise
   }
   return el('div', { class: 'fgt-pl' + (s.kind && s.kind !== 'game' ? ' fgt-' + s.kind : '') + (extraClass ? ' ' + extraClass : '') }, kids);
 }
 
-function buildWeekPanel(key, team, now) {
-  const w = weekView(team, now);
+function buildWeekPanel(key, team, now, opts) {
+  const on = !!(opts && opts.returnDates);
+  const w = weekView(team, now, opts);
   const inPeriod = w.days.some(d => d.state === 'today');
   const collapsed = weekCollapsed();
   const toggle = el('a', { href: '#', text: (collapsed ? '▸' : '▾') + ' Week' });
@@ -645,39 +838,48 @@ function buildWeekPanel(key, team, now) {
   });
   const head = el('div', { class: 'fgt-wkhead' }, [toggle, el('b', { text: dayLabel(team.period.start) + ' – ' + dayLabel(team.period.end) }),
     el('span', { text: 'every lineup slot, per day · ' + w.games.skaters + ' skater games · ' + w.games.goalies + ' goalie games' }),
+    el('span', { style: 'color:' + RET_COLOR, text: on ? 'return dates on' : '' }),
     el('span', { style: 'margin-left:auto', text: inPeriod ? 'today: ' + dayLabel(dayString(now)) : '' })]);
   const cols = el('div', { class: 'fgt-cols' }, w.days.map(d => {
     const c = d.counts;
     const kids = [el('div', { class: 'fgt-dh' }, [el('b', { text: d.label }),
-      el('span', { text: d.slots === null ? '' : c.playing + ' playing · ' + c.idle + ' empty' + (c.open ? ' · ' + c.open + ' open' : '') + (c.out ? ' · ' + c.out + ' out' : '') })])];
+      el('span', { text: d.slots === null ? '' : c.playing + ' playing · ' + c.idle + ' empty' + (c.open ? ' · ' + c.open + ' open' : '') + (c.out ? ' · ' + c.out + ' out' : '') + (c.ret ? ' · ' + c.ret + ' back' : '') })])];
     if (d.slots === null) kids.push(el('div', { class: 'fgt-pl fgt-none', text: 'no lineup loaded' }));
     else {
       for (const s of d.slots) kids.push(slotLine(s));
       if (d.goalies.length) { kids.push(el('div', { class: 'fgt-gsep' })); for (const s of d.goalies) kids.push(slotLine(s)); }
-      if (d.bench.length) { kids.push(el('div', { class: 'fgt-sec', text: 'Bench, has a game' })); for (const s of d.bench) kids.push(slotLine(Object.assign({ kind: 'game' }, s), 'fgt-bench')); }
+      if (d.bench.length) { kids.push(el('div', { class: 'fgt-sec', text: 'Bench, has a game' })); for (const s of d.bench) kids.push(slotLine(Object.assign({ kind: 'game' }, s), 'fgt-bench')); }   // a bench entry's own kind (out / ret, 1.3.0) wins
     }
     return el('div', { class: 'fgt-col fgt-' + d.state }, kids);
   }));
+  const tag = (cls, text) => el('span', { class: 'fgt-tag fgt-tag-' + cls, text });
+  const tagLines = on ? [
+    el('span', {}, [tag('out', 'OUT'), ' / ', tag('out', 'IR'), ' / ', tag('out', 'SUSP'), ' / ', tag('note', 'DTD'), ' struck: not counted that day (before the expected return date, no date, or the date passed)']),
+    el('span', {}, [tag('ret', 'RET'), ' counted from the expected return date']),
+    el('span', {}, [tag('note', 'DTD'), ' / ', tag('note', 'MINORS'), ' not struck: shown, still counted (hover for Fantrax\'s note) · dates: strip lines and hover']),
+  ] : [
+    el('span', {}, [tag('out', 'OUT'), ' / ', tag('out', 'IR'), ' / ', tag('out', 'SUSP'), ' out, on IR, suspended: struck and not counted']),
+    el('span', {}, [tag('note', 'DTD'), ' / ', tag('note', 'MINORS'), ' day-to-day, in the minors: shown, still counted (hover for Fantrax\'s note)']),
+  ];
   const legend = el('div', { class: 'fgt-legend' }, [
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'background:#8fbcff' }), 'slot filled, plays that day']),
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'background:#2a2e3c;border:1px solid #4b5163' }), 'slot empty: its player has no game (name in grey)']),
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'border:1px dashed rgba(251,191,36,.7)' }), 'slot open: nobody in it (a change carries forward to later days)']),
-    el('span', {}, [el('span', { class: 'fgt-tag fgt-tag-out', text: 'OUT' }), ' / ', el('span', { class: 'fgt-tag fgt-tag-out', text: 'IR' }), ' / ', el('span', { class: 'fgt-tag fgt-tag-out', text: 'SUSP' }), ' out, on IR, suspended: struck and not counted']),
-    el('span', {}, [el('span', { class: 'fgt-tag fgt-tag-note', text: 'DTD' }), ' / ', el('span', { class: 'fgt-tag fgt-tag-note', text: 'MINORS' }), ' day-to-day, in the minors: shown, still counted (hover for Fantrax\'s note)']),
+  ].concat(tagLines, [
     el('span', {}, [el('span', { class: 'fgt-sw', style: 'background:#4b5163' }), 'on reserve that day with a game']),
     el('span', { text: 'dimmed column = already played' }),
-  ]);
+  ]));
   body.appendChild(cols); body.appendChild(legend);
   return el('div', { class: 'fgt-wk', 'data-fgt': 'week', 'data-fgt-key': key }, [head, body]);
 }
 
 // The headline is a flex row (title block ~900 px + team picker); letting it wrap and giving the panel a 100% basis puts
 // the panel on its own full-width line under both (1068 px on 2026-09-24), the same width as Fantrax's tables.
-function renderWeek(root, headline, team, key, now) {
+function renderWeek(root, headline, team, key, now, opts) {
   ensureWeekStyle();
   removeOwn(root, 'week');
   headline.style.flexWrap = 'wrap';
-  const panel = buildWeekPanel(key, team, now);
+  const panel = buildWeekPanel(key, team, now, opts);
   panel.style.flex = '1 1 100%'; panel.style.minWidth = '0';
   headline.appendChild(panel);
 }
@@ -694,7 +896,8 @@ const CELL_STYLE = {
 function clearCellStyles(table) {
   for (const c of table.querySelectorAll('[data-fgt-cell]')) { for (const k of ['background', 'boxShadow', 'textDecoration', 'opacity']) c.style[k] = ''; c.removeAttribute('data-fgt-cell'); c.removeAttribute('title'); }
 }
-function renderCellStatus(team, key) {
+function renderCellStatus(team, key, now, opts) {
+  const today = dayString(now || new Date());
   for (const table of document.querySelectorAll(SEL.rosterTables)) {
     const headerRow = table.querySelector(SEL.rosterHeaderRow), body = table.querySelector(SEL.rosterBody);
     if (!headerRow || !body) continue;
@@ -715,17 +918,18 @@ function renderCellStatus(team, key) {
       for (const { index, day } of days) {
         const cell = cells[index], game = row.games.find(g => g.day === day);
         if (!cell || !game || !game.status || game.status === 'ir' && !team.lineups[day]) continue;
-        const st = game.status === 'active' ? (row.injured ? CELL_STYLE.activeOut : CELL_STYLE.active) : game.status === 'reserve' ? CELL_STYLE.reserve : CELL_STYLE.ir;
+        const counted = countsGame(row, game, today, opts), byDate = counted && !!(opts && opts.returnDates && effectiveReturnDate(row, today));
+        const st = game.status === 'active' ? (counted ? CELL_STYLE.active : CELL_STYLE.activeOut) : game.status === 'reserve' ? CELL_STYLE.reserve : CELL_STYLE.ir;
         Object.assign(cell.style, st);
         cell.setAttribute('data-fgt-cell', key);
-        cell.setAttribute('title', game.status === 'active' ? (row.injured ? 'active that day, but ' + (row.tag ? row.tag.text : 'out') : 'active that day') : game.status === 'reserve' ? 'on reserve that day' : 'IR / not on the roster that day');
+        cell.setAttribute('title', game.status === 'active' ? (counted ? (byDate ? 'active that day, counted from the expected return date' : 'active that day') : 'active that day, but ' + (row.tag ? row.tag.text : 'out')) : game.status === 'reserve' ? 'on reserve that day' : 'IR / not on the roster that day');
       }
     }
     table.setAttribute('data-fgt-cells', key);
   }
 }
 
-function renderRoster(route, force) {
+function renderRoster(route, force, stale) {
   const headline = document.querySelector(SEL.rosterHeadline), root = document.querySelector(SEL.rosterRoot);
   if (!headline || !root) return;
   // The page root is a CSS grid: a sibling inserted after the headline lands at the bottom of the page, so the strip
@@ -750,13 +954,13 @@ function renderRoster(route, force) {
   beginUpdate(root, 'strip', key, n => anchor.appendChild(n));
   for (const n of root.querySelectorAll('[data-fgt="perday"], [data-fgt="week"]')) n.style.opacity = '0.45';
   const stillWanted = () => anchor.isConnected && isCurrent(ownNodes(root, 'strip').marker, key);
-  cachedLoadTeam(route.leagueId, { teamId: route.teamId, period, day }).then(team => {
+  cachedLoadTeam(route.leagueId, { teamId: route.teamId, period, day }, undefined, undefined, undefined, stale).then(withDates(route.leagueId)).then(({ team, opts }) => {
     if (!stillWanted()) return;
     const now = new Date();
-    finishUpdate(root, 'strip', () => anchor.appendChild(buildTable('strip', key, team, now)));
-    renderWeek(root, headline, team, key, now);
-    renderPerDay(team, key, now);
-    renderCellStatus(team, key);
+    finishUpdate(root, 'strip', () => { anchor.appendChild(buildTable('strip', key, team, now, opts)); removeOwn(root, 'retctl'); anchor.appendChild(buildReturnControl('roster', key, () => renderRoster(route, true, true))); });
+    renderWeek(root, headline, team, key, now, opts);
+    renderPerDay(team, key, now, opts);
+    renderCellStatus(team, key, now, opts);
   }, err => {
     console.warn(LOG, 'roster', err);
     if (!stillWanted()) return;
@@ -807,9 +1011,9 @@ function start() {
 // ---------------------------------------------------------------- exports / start-up
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { INJURY_ICON_TYPES, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
-    parsePeriodList, parseGamesPerPos, parseStart, parseGameText, iconTag, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses,
-    compute, formatStatus, isPending, weekView, shouldRender, isCurrent, parseRoute,
-    api, apiMulti, loadTeam, cachedLoadTeam, clearCache };
+  module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
+    parsePeriodList, parseGamesPerPos, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses,
+    compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, weekView, shouldRender, isCurrent, parseRoute,
+    api, apiMulti, loadTeam, cachedLoadTeam, clearCache, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }

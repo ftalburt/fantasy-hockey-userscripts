@@ -25,6 +25,13 @@ Shows games played against the league's games-played cap, skaters and goalies se
   already played are dimmed, today is marked. The "Week" link collapses the panel and remembers your choice.
 - **Schedule - Week cells** (since 1.2.0) are recoloured by each day's lineup: green tint = in the active lineup that
   day, struck through = on reserve that day, red = active but out. Hover a cell for the wording.
+- **Expected return dates** (since 1.3.0, off by default): tick "Count players from their Fantrax expected return
+  date" (under the roster strip, or above the two teams on Matchups) and a player tagged Out, IR or Day-to-day is
+  counted for games on or after the date Fantrax shows in his injury report, and not before it; suspended players and
+  players with no date keep the default rule. The Sched and Potential numbers that changed turn violet, and lines under
+  the table say who moved them and why; in the Week panel a `RET` tag marks the days a player is counted because of
+  his date. The dates are Fantrax's estimates and are often placeholders, so treat this as a second opinion, not a
+  fact. One extra read-only request per flagged player, cached ten minutes.
 
 Played and Max come from Fantrax's own Min/Max view, so they match what Fantrax enforces. Players on IR, tagged
 Out or suspended never count; day-to-day players do. A game that has started today no longer counts as scheduled (whether Fantrax

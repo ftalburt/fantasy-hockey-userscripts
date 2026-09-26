@@ -83,7 +83,7 @@ test('dayString and periodDays use calendar days, not 24 h arithmetic', () => {
 });
 
 // ---- compute ----
-function row(status, games, injured = false) { return { name: 'r', injured, games: games.map(g => Object.assign({ status }, g)) }; }   // every game carries its day's status
+function row(status, games, injured = false, extra = {}) { return Object.assign({ name: 'r', injured, flag: null, returnDate: null, games: games.map(g => Object.assign({ status }, g)) }, extra); }   // every game carries its day's status
 function at(day, h = 19) { const [y, m, d] = day.split('-').map(Number); return { day, start: new Date(y, m - 1, d, h, 0) }; }
 const P1 = { id: 1, start: '2026-09-29', end: '2026-10-04', days: T.periodDays('2026-09-29', '2026-10-04') };
 const NOW_THU_18 = new Date(2026, 9, 1, 18, 0); // Thu Oct 1, 6 pm
@@ -168,7 +168,8 @@ function fakeFetch(responsesByKey) {
   const f = async (url, init) => {
     const body = JSON.parse(init.body);
     for (const m of body.msgs) calls.push({ url, method: m.method, data: m.data });
-    return { ok: true, json: async () => ({ responses: body.msgs.map(m => ({ data: responsesByKey[m.data.period ? m.data.view + '@' + m.data.period : m.data.view] })) }) };
+    const keyOf = m => m.method === 'getPlayerProfile' ? 'PROFILE@' + m.data.playerId : (m.data.period ? m.data.view + '@' + m.data.period : m.data.view);
+    return { ok: true, json: async () => ({ responses: body.msgs.map(m => ({ data: m.method === 'getPlayerProfile' ? (responsesByKey[keyOf(m)] === null ? undefined : responsesByKey[keyOf(m)] || { sectionContent: {} }) : responsesByKey[keyOf(m)] })) }) };
   };
   f.calls = calls;
   return f;
@@ -465,7 +466,7 @@ function weekTeam({ rows, goalies = [], lineups }) {
     goalies: { played: 0, max: 4, rows: T.applyDayStatuses(goalies, statusByDay) } } };
 }
 const game = (day, time, opp = '@XXX') => ({ day, start: T.parseStart(time, day), opp, time: time.replace(/^\w{3} /, '') });
-const prow = (name, games, extra) => Object.assign({ id: 'id-' + name, name, pos: 'C', injured: false, tag: null, games }, extra);
+const prow = (name, games, extra) => Object.assign({ id: 'id-' + name, name, shortName: name, pos: 'C', injured: false, tag: null, flag: null, returnDate: null, returnText: null, games }, extra);
 const slot = (pos, status, name, group = 'skaters') => ({ posId: pos, pos, status, id: name ? 'id-' + name : null, name: name || '', group });
 
 test('weekView: one entry per period day; slots keep lineup order and become game / idle / open / out', () => {
@@ -486,7 +487,7 @@ test('weekView: one entry per period day; slots keep lineup order and become gam
     ['C', 'game', 'A', 'CHI', '7:00PM', null], ['RW', 'out', 'C', '@XXX', '9:00PM', 'OUT'], ['D', 'idle', 'D', '', '', null], ['D', 'open', '', '', '', null], ['C', 'game', 'N', '@XXX', '8:00PM', 'DTD']]);
   assert.deepEqual(d.goalies.map(s => [s.pos, s.kind, s.name]), [['G', 'game', 'G']]);
   assert.deepEqual(d.bench.map(s => [s.pos, s.name, s.time]), [['LW', 'B', '6:00PM']], 'reserve players with a game that day');
-  assert.deepEqual(d.counts, { playing: 2, idle: 1, open: 1, out: 1 }, 'skater slots only; goalies are listed apart');
+  assert.deepEqual(d.counts, { playing: 2, idle: 1, open: 1, out: 1, ret: 0 }, 'skater slots only; goalies are listed apart');
   assert.equal(w.days[0].slots, null, 'a day whose lineup was not loaded has no slot list');
   assert.deepEqual(w.days[0].bench, []);
   assert.deepEqual(w.games, { skaters: 2, goalies: 1 }, 'active games by healthy players over the period: A and N on Thu; C is out, A\'s Tuesday has no lineup loaded');
@@ -508,4 +509,161 @@ test('weekView: a lineup player missing from the schedule (dropped since) shows 
   const thu = '2026-10-01';
   const team = weekTeam({ rows: [], lineups: { [thu]: { statuses: { 'id-Gone': 'active' }, slots: [slot('C', 'active', 'Gone')] } } });
   assert.deepEqual(T.weekView(team, NOW_THU_18).days[2].slots.map(s => [s.kind, s.name]), [['idle', 'Gone']]);
+});
+
+// ---- 1.3.0: expected return dates ----
+test('parseReturnDate: reads the Fantrax injury line, strips tags, infers the year', () => {
+  assert.equal(T.parseReturnDate(['Expected to return on Sat Sep 26 - <i>Out Indefinitely.</i>'], '2026-09-26'), '2026-09-26');
+  assert.equal(T.parseReturnDate(['Expected to return on Mon Nov 2 - Injured Reserve - Long-term.'], '2026-09-26'), '2026-11-02');
+  assert.equal(T.parseReturnDate(['Expected to return on Mon Feb 1 - Out Indefinitely.'], '2026-10-15'), '2027-02-01', 'more than 120 days back this year → next year');
+  assert.equal(T.parseReturnDate(['Expected to return on Wed Sep 30 - Day-to-Day.'], '2026-10-05'), '2026-09-30', 'a few days back stays this year (a passed date)');
+  assert.equal(T.parseReturnDate(['Expected to return on Tue Sep 29 - Out Indefinitely.'], '2027-01-10'), '2026-09-29', '103 days back stays this year');
+});
+test('parseReturnDate: anything else is null and never throws', () => {
+  for (const v of [['Out for the season.'], [], null, undefined, 'Expected to return on Sat Sep 26', [42], ['Expected to return on Sat Xyz 26 - Out.']])
+    assert.equal(T.parseReturnDate(v, '2026-09-26'), null);
+});
+test('rowFlag and parseScheduleRows: rows carry flag, shortName and empty return fields', () => {
+  assert.deepEqual([[{ typeId: '30' }], [{ typeId: '2' }], [{ typeId: '6' }], [{ typeId: '1' }], [{ typeId: '4' }], [], undefined].map(T.rowFlag), ['out', 'ir', 'susp', 'dtd', null, null, null]);
+  assert.equal(T.rowFlag([{ typeId: '1' }, { typeId: '30' }]), 'out', 'worst wins');
+  const rows = T.parseScheduleRows(schedule({ days: WEEK1, skaters: [{ name: 'K. Out', icons: [{ typeId: '30', tooltip: 'Hip - Out Indefinitely' }] }, { name: 'N. Fine' }] }), P1);
+  assert.deepEqual(rows.skaters.map(r => [r.shortName, r.flag, r.returnDate, r.returnText]), [['K. Out', 'out', null, null], ['N. Fine', null, null, null]]);
+});
+
+const R = { returnDates: true };
+test('countsGame: off → healthy only; on → from the return date, passed date = no date, today counts', () => {
+  const out = { injured: true, flag: 'out', returnDate: '2026-10-02' }, dtd = { injured: false, flag: 'dtd', returnDate: '2026-10-03' }, stale = { injured: true, flag: 'out', returnDate: '2026-09-30' };
+  const g = day => ({ day });
+  assert.deepEqual([T.countsGame(out, g('2026-10-01'), '2026-10-01', {}), T.countsGame(dtd, g('2026-10-01'), '2026-10-01', {})], [false, true], 'off = 1.2.1');
+  assert.deepEqual([T.countsGame(out, g('2026-10-01'), '2026-10-01', R), T.countsGame(out, g('2026-10-02'), '2026-10-01', R), T.countsGame(out, g('2026-10-03'), '2026-10-01', R)], [false, true, true]);
+  assert.deepEqual([T.countsGame(dtd, g('2026-10-02'), '2026-10-01', R), T.countsGame(dtd, g('2026-10-03'), '2026-10-01', R)], [false, true]);
+  assert.equal(T.countsGame(stale, g('2026-10-03'), '2026-10-01', R), false, 'a passed date is no date: Out never counts');
+  assert.equal(T.countsGame({ injured: true, flag: 'out', returnDate: '2026-10-01' }, g('2026-10-01'), '2026-10-01', R), true, 'a date equal to today counts from today');
+  assert.equal(T.countsGame({ injured: true, flag: 'susp', returnDate: null }, g('2026-10-03'), '2026-10-01', R), false);
+  assert.equal(T.countsGame({ injured: false, flag: 'dtd', returnDate: null }, g('2026-10-03'), '2026-10-01', R), true);
+});
+test('compute with return dates: Out gains games from the date, DTD loses games before it, bench follows the rule', () => {
+  const rows = [
+    row('active', [at('2026-10-01'), at('2026-10-03')], true, { flag: 'out', returnDate: '2026-10-02' }),   // Thu no, Sat yes → +1
+    row('active', [at('2026-10-02'), at('2026-10-04')], false, { flag: 'dtd', returnDate: '2026-10-03' }), // Fri no, Sun yes → −1
+    row('reserve', [at('2026-10-02'), at('2026-10-03')], true, { flag: 'out', returnDate: '2026-10-03' }), // bench: Sat only → potential +1
+    row('active', [at('2026-10-03')], true, { flag: 'out', returnDate: '2026-10-15' }),                     // after the period → 0
+  ];
+  const off = T.compute({ played: 10, max: 52, rows }, P1, NOW_THU_18);
+  const on = T.compute({ played: 10, max: 52, rows }, P1, NOW_THU_18, R);
+  assert.deepEqual([off.scheduled, off.potential], [2, 2]);
+  assert.deepEqual([on.scheduled, on.potential], [2, 3]);
+  assert.deepEqual(on.perDay.map(d => d.active), [0, 0, 0, 0, 1, 1], 'perDay counts the same games (the reserve row is not active)');
+  assert.deepEqual(T.compute({ played: 10, max: 52, rows }, P1, NOW_THU_18, { returnDates: false }), off, 'explicit off equals default');
+});
+test('explainTeam groups strictly by effect; zero always under none with its reason', () => {
+  const mk = (name, status, games, flag, returnDate, injured = flag !== 'dtd' && flag !== null) => Object.assign(row(status, games, injured, { flag, returnDate }), { id: name, shortName: name });
+  const skaters = [
+    mk('Kap', 'active', [at('2026-10-01'), at('2026-10-02'), at('2026-10-03')], 'out', '2026-10-02'),
+    mk('Eic', 'active', [at('2026-10-02'), at('2026-10-04')], 'dtd', '2026-10-03'),
+    mk('Nec', 'active', [at('2026-10-01', 20), at('2026-10-03')], 'dtd', '2026-10-01'),
+    mk('Hug', 'active', [at('2026-10-03')], 'out', '2026-10-15'),
+    mk('Vil', 'active', [at('2026-10-02')], 'out', '2026-09-30'),
+    mk('McA', 'active', [at('2026-10-03')], 'susp', null),
+    mk('Byr', 'active', [at('2026-10-03')], 'dtd', null),
+    mk('Duc', 'reserve', [at('2026-10-02'), at('2026-10-03')], 'out', '2026-10-03'),
+    mk('Fin', 'active', [at('2026-10-03')], null, null),
+    mk('Pas', 'active', [at('2026-09-29')], 'out', '2026-10-02'),   // only a past game: not listed
+  ];
+  const goalies = [mk('Oet', 'active', [at('2026-10-02'), at('2026-10-03')], 'out', '2026-10-03')];
+  const team = { period: P1, groups: { skaters: { played: 0, max: 52, rows: skaters }, goalies: { played: 0, max: 4, rows: goalies } } };
+  const x = T.explainTeam(team, NOW_THU_18);
+  assert.deepEqual(x.gained.map(T.formatEffect), ['Kap Fri 10/2 +2', 'Duc Sat 10/3 +1 (bench)', 'Oet Sat 10/3 +1 (G)']);
+  assert.deepEqual(x.lost.map(T.formatEffect), ['Eic Sat 10/3 −1']);
+  assert.deepEqual(x.none.map(T.formatEffect), ['Nec DTD, back today', 'Hug 10/15, after this period', 'Vil 9/30 passed, still Out', 'McA suspended, no date', 'Byr DTD, no date']);
+  assert.ok(!x.none.some(e => e.name === 'Fin') && !x.none.some(e => e.name === 'Pas'));
+});
+test('weekView with return dates: out before the date, ret from it; flagged bench rows shown struck then counted', () => {
+  const rows = [prow('Kap', [game('2026-10-01', 'Thu 7:00PM'), game('2026-10-03', 'Sat 7:00PM')], { injured: true, flag: 'out', returnDate: '2026-10-02', tag: { text: 'OUT', kind: 'out', tip: 'Hip - Out Indefinitely' } }),
+    prow('Duc', [game('2026-10-01', 'Thu 8:00PM'), game('2026-10-03', 'Sat 8:00PM')], { injured: true, flag: 'out', returnDate: '2026-10-03', tag: { text: 'OUT', kind: 'out', tip: '' } }),
+    prow('Sus', [game('2026-10-03', 'Sat 9:00PM')], { injured: true, flag: 'susp', returnDate: null, tag: { text: 'SUSP', kind: 'out', tip: '' } })];
+  const day = { slots: [slot('C', 'active', 'Kap'), slot('LW', 'reserve', 'Duc'), slot('RW', 'reserve', 'Sus')], statuses: { 'id-Kap': 'active', 'id-Duc': 'reserve', 'id-Sus': 'reserve' } };
+  const team = weekTeam({ rows, lineups: { '2026-10-01': day, '2026-10-03': day } });
+  const off = T.weekView(team, NOW_THU_18), on = T.weekView(team, NOW_THU_18, { returnDates: true });
+  assert.deepEqual(off.days.map(d => d.slots && d.slots[0].kind), [null, null, 'out', null, 'out', null]);
+  assert.deepEqual(on.days.map(d => d.slots && d.slots[0].kind), [null, null, 'out', null, 'ret', null]);
+  assert.deepEqual(off.days[4].bench.map(b => [b.name, b.kind]), [], 'off: injured reserve players are left out, as in 1.2.1');
+  assert.deepEqual(on.days[2].bench.map(b => [b.name, b.kind]), [['Duc', 'out']]);
+  assert.deepEqual(on.days[4].bench.map(b => [b.name, b.kind]), [['Duc', 'ret']]);
+  assert.deepEqual([on.days[4].counts.playing, on.days[4].counts.ret, on.games.skaters], [1, 1, 1]);
+});
+
+// real shape (2026-09-26, live): the injury report sits under the OVERVIEW section; a Suspended player's OVERVIEW has no injuryInfo
+const profile = text => ({ sectionContent: { OVERVIEW: text === undefined ? { tables: [] } : { tables: [], injuryInfo: { icon: { typeId: '1' }, injuryMsgs: [text], title: 'Injury Report' } } } });
+test('withReturnDates: one profile request for Out / IR / DTD rows, dates parsed, susp and healthy rows untouched, team not mutated', async () => {
+  const f = fakeFetch({ 'PROFILE@id-K': profile('Expected to return on Fri Oct 2 - <i>Out Indefinitely.</i>'), 'PROFILE@id-D': profile('Expected to return on Sat Oct 3 - Day-to-Day.'), 'PROFILE@id-M': profile() });
+  const rows = [prow('K', [], { injured: true, flag: 'out' }), prow('D', [], { flag: 'dtd' }), prow('S', [], { injured: true, flag: 'susp' }), prow('M', [], { injured: true, flag: 'ir' }), prow('F', [])];
+  const team = weekTeam({ rows, lineups: {} });
+  T.clearCache();
+  const t2 = await T.withReturnDates('abc', team, f, NOW_THU_18);
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(f.calls.map(c => [c.method, c.data]), [['getPlayerProfile', { leagueId: 'abc', playerId: 'id-K' }], ['getPlayerProfile', { leagueId: 'abc', playerId: 'id-D' }], ['getPlayerProfile', { leagueId: 'abc', playerId: 'id-M' }]]);
+  assert.deepEqual(t2.groups.skaters.rows.map(r => [r.name, r.returnDate]), [['K', '2026-10-02'], ['D', '2026-10-03'], ['S', null], ['M', null], ['F', null]]);
+  assert.equal(t2.groups.skaters.rows[0].returnText, 'Expected to return on Fri Oct 2 - Out Indefinitely.');
+  assert.equal(team.groups.skaters.rows[0].returnDate, null, 'input untouched');
+  assert.equal(t2.period, team.period);
+});
+test('withReturnDates: profiles are cached 10 min per player; a failed request gives null without rejecting or caching', async () => {
+  T.clearCache();
+  const f = fakeFetch({ 'PROFILE@id-K': profile('Expected to return on Fri Oct 2 - Out.') });
+  const team = weekTeam({ rows: [prow('K', [], { injured: true, flag: 'out' })], lineups: {} });
+  await T.withReturnDates('abc', team, f, NOW_THU_18); await T.withReturnDates('abc', team, f, NOW_THU_18);
+  assert.equal(f.calls.length, 1);
+  T.clearCache();
+  let n = 0; const bad = async () => { n++; throw new Error('down'); };
+  const t3 = await T.withReturnDates('abc', team, bad, NOW_THU_18, 0);
+  assert.equal(t3.groups.skaters.rows[0].returnDate, null);
+  assert.equal(n, 2, 'apiMulti retried once');
+  const t4 = await T.withReturnDates('abc', team, f, NOW_THU_18);
+  assert.equal(t4.groups.skaters.rows[0].returnDate, '2026-10-02', 'the failure was not cached');
+  const t0 = weekTeam({ rows: [prow('F', [])], lineups: {} }), before = n;
+  assert.strictEqual(await T.withReturnDates('abc', t0, bad, NOW_THU_18), t0, 'no flagged rows: same object, no call');
+  assert.equal(n, before);
+});
+test('return-dates setting helpers tolerate a missing localStorage and default off', () => {
+  assert.equal(T.returnDatesOn(), false);
+  assert.doesNotThrow(() => T.setReturnDatesOn(true));
+  assert.equal(T.RETURN_DATES_KEY, 'fgt-return-dates');
+});
+
+// ---- final-review fixes (2026-09-26) ----
+test('cachedLoadTeam with allowStale serves an expired entry without a request (the toggle re-renders from cache)', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({});
+  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, {}) }, stats));
+  T.clearCache();
+  const a = await T.cachedLoadTeam('abc', { teamId: 'teamA', period: 1 }, f, NOW_PRESEASON);
+  const realNow = Date.now; Date.now = () => realNow() + 61000;
+  try {
+    const b = await T.cachedLoadTeam('abc', { teamId: 'teamA', period: 1 }, f, NOW_PRESEASON, undefined, true);
+    assert.strictEqual(b, a); assert.equal(f.calls.length, 8, 'stale but accepted: no request');
+    await T.cachedLoadTeam('abc', { teamId: 'teamA', period: 1 }, f, NOW_PRESEASON);
+    assert.equal(f.calls.length, 16, 'without allowStale the expired entry reloads');
+  } finally { Date.now = realNow; }
+});
+test('loadReturnTexts: one profile without data gives null for that player only, in one request', async () => {
+  T.clearCache();
+  const f = fakeFetch({ 'PROFILE@id-A': profile('Expected to return on Fri Oct 2 - Out.'), 'PROFILE@id-B': null, 'PROFILE@id-C': profile('Expected to return on Sat Oct 3 - Out.') });
+  const texts = await T.loadReturnTexts('abc', ['id-A', 'id-B', 'id-C'], f, 0);
+  assert.deepEqual(texts, { 'id-A': 'Expected to return on Fri Oct 2 - Out.', 'id-B': null, 'id-C': 'Expected to return on Sat Oct 3 - Out.' });
+  assert.equal(f.calls.length, 3, 'one request, no retry');
+});
+test('explainTeam: the bench note follows the games that changed; Out with games only before its date; DTD with games only after', () => {
+  const res = day => Object.assign(at(day), { status: 'reserve' });
+  const mk = (name, games, flag, returnDate) => Object.assign(row('active', games, flag !== 'dtd', { flag, returnDate }), { id: name, shortName: name });
+  const skaters = [
+    mk('LostAct', [at('2026-10-02'), res('2026-10-04')], 'dtd', '2026-10-03'),     // loses Fri (active), keeps Sun (bench) → −1, not a bench change
+    mk('LostBench', [res('2026-10-02'), at('2026-10-04')], 'dtd', '2026-10-03'),   // loses Fri (bench) → −1 (bench)
+    mk('GainAct', [res('2026-10-02'), at('2026-10-03')], 'out', '2026-10-03'),     // gains Sat (active) → +1, not a bench change
+    mk('OutBefore', [at('2026-10-02')], 'out', '2026-10-03'),                     // a game before the date only
+    mk('DtdAfter', [at('2026-10-04')], 'dtd', '2026-10-03'),                      // a game after the date only
+  ];
+  const x = T.explainTeam({ period: P1, groups: { skaters: { played: 0, max: 52, rows: skaters }, goalies: { played: 0, max: 4, rows: [] } } }, NOW_THU_18);
+  assert.deepEqual(x.gained.map(T.formatEffect), ['GainAct Sat 10/3 +1']);
+  assert.deepEqual(x.lost.map(T.formatEffect), ['LostAct Sat 10/3 −1', 'LostBench Sat 10/3 −1 (bench)']);
+  assert.deepEqual(x.none.map(T.formatEffect), ['OutBefore 10/3, no game from then', 'DtdAfter no game before the date']);
 });
