@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.1
+// @version      1.3.2
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -22,6 +22,7 @@
  * with the players it moved listed under the tables.
  * 1.3.1 lists players in IR (or any off-lineup slot) who are expected back this period, with the players Fantrax says
  * could take their slot; nothing about them is counted.
+ * 1.3.2 stops striking reserve days in the Schedule - Week grid (only active-but-out days are struck).
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -1001,10 +1002,13 @@ function renderWeek(root, headline, team, key, now, opts) {
 // ---- recolour Fantrax's own Schedule - Week cells by that day's lineup (1.2.0): the grid draws every row with the
 // displayed day's slot, so a player benched for Thursday still looks active in Thursday's column. Rows are matched by
 // the player's full name in the first cell (the player link carries no id); the day cells by the header's day columns.
+// 1.3.2: a reserve day is left as Fantrax draws it (hover text only). A strike means "expected to miss this game"
+// everywhere else in the script, and striking a healthy bench player's games hid the opponents a manager reads to pick
+// which ones to start him in (league feedback, 2026-09-27); the missing green box already says he is not active.
 const CELL_STYLE = {
   active: { background: 'rgba(74,222,128,.10)', boxShadow: 'inset 0 0 0 1px rgba(74,222,128,.35)' },
   activeOut: { background: 'rgba(248,113,113,.10)', boxShadow: 'inset 0 0 0 1px rgba(248,113,113,.35)', textDecoration: 'line-through' },
-  reserve: { textDecoration: 'line-through', opacity: '0.55' },
+  reserve: {},
   ir: { opacity: '0.35' },
 };
 function clearCellStyles(table) {

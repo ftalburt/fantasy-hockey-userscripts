@@ -24,7 +24,8 @@ Shows games played against the league's games-played cap, skaters and goalies se
   Under the goalie slots, "Bench, has a game" lists reserve players who play that day, the swaps worth making. Days
   already played are dimmed, today is marked. The "Week" link collapses the panel and remembers your choice.
 - **Schedule - Week cells** (since 1.2.0) are recoloured by each day's lineup: green tint = in the active lineup that
-  day, struck through = on reserve that day, red = active but out. Hover a cell for the wording.
+  day, red and struck through = active but out; a day on reserve is left as Fantrax draws it (since 1.3.2), so the
+  opponent stays readable. Hover a cell for the wording.
 - **Expected return dates** (since 1.3.0, off by default): tick "Count players from their Fantrax expected return
   date" (under the roster strip, or above the two teams on Matchups) and a player tagged Out, IR or Day-to-day is
   counted for games on or after the date Fantrax shows in his injury report, and not before it; suspended players and
