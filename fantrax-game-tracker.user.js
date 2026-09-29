@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.2
+// @version      1.3.3
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -23,6 +23,7 @@
  * 1.3.1 lists players in IR (or any off-lineup slot) who are expected back this period, with the players Fantrax says
  * could take their slot; nothing about them is counted.
  * 1.3.2 stops striking reserve days in the Schedule - Week grid (only active-but-out days are struck).
+ * 1.3.3: a game in progress (Fantrax shows its score, not its time) is no longer counted as still to play; it is in Played.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -130,11 +131,14 @@ function parseGamesPerPos(data) {
 }
 
 // "Tue 4:00PM" inside "@CAR<br/>Tue 4:00PM" → local Date on `day`; null when there is no clock time.
+// Once a game starts Fantrax shows the score instead ("FLA 0<br/>@CAR 0", verified 2026-09-29) and already counts it
+// in Played: that returns midnight of `day`, i.e. started.
 function parseStart(content, day) {
+  const [y, mo, d] = day.split('-').map(Number);
+  if (/^\s*[A-Z]{2,3}\s+\d+\s*<br\s*\/?>\s*@[A-Z]{2,3}\s+\d+/i.test(content || '')) return new Date(y, mo - 1, d);
   const m = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(content || '');
   if (!m) return null;
   let h = Number(m[1]) % 12; if (m[3].toUpperCase() === 'PM') h += 12;
-  const [y, mo, d] = day.split('-').map(Number);
   return new Date(y, mo - 1, d, h, Number(m[2]));
 }
 

@@ -797,3 +797,14 @@ test('offSections: one panel section per off-lineup status, titled by that statu
   assert.deepEqual(T.offSections([e('Larkin', 'Inj Res', 'back')]).map(s => s.title), ['Inj Res, expected back']);
   assert.deepEqual(T.offSections([]), []);
 });
+
+test('a started game (Fantrax shows the live score, no clock time) is not pending', () => {
+  // Opening night 2026-09-29: during FLA@CAR the cell was "FLA 0<br/>@CAR 0" and GAMES_PER_POS already counted it in Played.
+  const day = '2026-09-29', now = new Date(2026, 8, 29, 16, 20);
+  const live = { day, start: T.parseStart('FLA 0<br/>@CAR 0', day) };
+  assert.notEqual(live.start, null);
+  assert.equal(T.isPending(live, day, now), false);
+  assert.equal(T.isPending({ day, start: T.parseStart('FLA 3<br/>@CAR 2 F/OT', day) }, day, now), false);
+  assert.equal(T.isPending({ day, start: T.parseStart('@TOR<br/>Tue 6:00PM', day) }, day, now), true);
+  assert.equal(T.isPending({ day, start: T.parseStart('@TOR', day) }, day, now), true);   // no time, no score: still assumed not started
+});
