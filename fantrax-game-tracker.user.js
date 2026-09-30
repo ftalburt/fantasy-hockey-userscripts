@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.3
+// @version      1.3.4
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -24,6 +24,7 @@
  * could take their slot; nothing about them is counted.
  * 1.3.2 stops striking reserve days in the Schedule - Week grid (only active-but-out days are struck).
  * 1.3.3: a game in progress (Fantrax shows its score, not its time) is no longer counted as still to play; it is in Played.
+ * 1.3.4: switching leagues inside one tab re-renders the roster page (its render key now carries the league).
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -476,6 +477,11 @@ function shouldRender(existing, key, force) {
 }
 // A finished load may only land if the container still waits for that key (a slow response must not overwrite a newer render).
 function isCurrent(existing, key) { return !!existing && existing.getAttribute('data-fgt-key') === key; }
+// The roster page's render key. It carries the league: without a teamId in the URL two leagues' roster pages had the
+// same key, so after an in-app league switch (same document) the other league's strip counted as already rendered (1.3.4).
+function rosterKey(route, period, day) {
+  return route.leagueId + '|' + (route.teamId || 'me') + '|' + (period === null ? 'cur' : period) + '|' + (day || '') + '|' + (route.view || '');
+}
 
 // ---------------------------------------------------------------- routing
 
@@ -1064,7 +1070,7 @@ function renderRoster(route, force, stale) {
     const list = periodLists[route.leagueId], sp = periodForDay(list, dayFromIndex(seasonStart(list), day));
     if (sp) { period = sp.id; day = null; }
   }
-  const key = (route.teamId || 'me') + '|' + (period === null ? 'cur' : period) + '|' + (day || '') + '|' + (route.view || '');
+  const key = rosterKey(route, period, day);
   const own = ownNodes(root, 'strip');
   // Only the Schedule - Week view has day columns; elsewhere the strip alone is the complete render.
   const hasDayColumns = Array.from(document.querySelectorAll(SEL.rosterTables + ' ' + SEL.rosterHeaderRow + ' > ' + SEL.cell))
@@ -1135,7 +1141,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses, statusLabel, statusShort,
-    compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, parseRoute,
+    compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, rosterKey, parseRoute,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }

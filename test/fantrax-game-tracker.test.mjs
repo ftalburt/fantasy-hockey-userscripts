@@ -337,6 +337,14 @@ test('shouldRender: a finished table or a terminal error marker for the same key
   assert.equal(T.shouldRender(node('DIV', { 'data-fgt-key': K, 'data-fgt-state': 'loading' }), K, false), true, 'a loading marker may be re-issued (cache hit, no new calls)');
 });
 
+test('rosterKey: two leagues on the same roster view never share a key (in-app league switch, 1.3.4)', () => {
+  const a = T.rosterKey({ leagueId: 'leagueA', teamId: null, view: 'GAMES_PER_POS' }, null, null);
+  const b = T.rosterKey({ leagueId: 'leagueB', teamId: null, view: 'GAMES_PER_POS' }, null, null);
+  assert.notEqual(a, b, 'otherwise the other league\'s strip is kept as "already rendered"');
+  assert.equal(a, T.rosterKey({ leagueId: 'leagueA', teamId: null, view: 'GAMES_PER_POS' }, null, null));
+  assert.notEqual(T.rosterKey({ leagueId: 'leagueA', teamId: null, view: null }, 1, null), T.rosterKey({ leagueId: 'leagueA', teamId: null, view: null }, 2, null));
+});
+
 test('isCurrent: a finished load only lands if the container still waits for its key', () => {
   assert.equal(T.isCurrent(node('DIV', { 'data-fgt-key': K, 'data-fgt-state': 'loading' }), K), true);
   assert.equal(T.isCurrent(node('TABLE', { 'data-fgt-key': 'teamA|1' }), K), false, 'a newer render replaced it');
