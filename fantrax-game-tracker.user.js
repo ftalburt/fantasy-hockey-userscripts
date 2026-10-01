@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.4
+// @version      1.3.5
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -25,6 +25,8 @@
  * 1.3.2 stops striking reserve days in the Schedule - Week grid (only active-but-out days are struck).
  * 1.3.3: a game in progress (Fantrax shows its score, not its time) is no longer counted as still to play; it is in Played.
  * 1.3.4: switching leagues inside one tab re-renders the roster page (its render key now carries the league).
+ * 1.3.5: a game past its scheduled time stays in Sched until it starts. Started = Fantrax's own GP for the day (today's
+ *        lineup call asks for that day's stats), the score cell as fallback — never the clock.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -131,12 +133,16 @@ function parseGamesPerPos(data) {
     periods: parsePeriodList(data.displayedLists && data.displayedLists.scoringPeriodList) };
 }
 
-// "Tue 4:00PM" inside "@CAR<br/>Tue 4:00PM" → local Date on `day`; null when there is no clock time.
-// Once a game starts Fantrax shows the score instead ("FLA 0<br/>@CAR 0", verified 2026-09-29) and already counts it
-// in Played: that returns midnight of `day`, i.e. started.
+// Once a game starts Fantrax shows the score instead of the time ("FLA 0<br/>@CAR 0", verified 2026-09-29) and
+// already counts it in Played. The score, not the clock, says a game has started: a late puck drop keeps the time
+// shown and stays out of Played (NYI@TOR 2026-09-30, still "Wed 6:30PM" at 6:38 pm). The player's GP for the day
+// (applyDayStatuses) is the main signal; the score cell is the fallback.
+function isStartedCell(content) { return /^\s*[A-Z]{2,3}\s+\d+\s*<br\s*\/?>\s*@[A-Z]{2,3}\s+\d+/i.test(content || ''); }
+// "Tue 4:00PM" inside "@CAR<br/>Tue 4:00PM" → local Date on `day`; null when there is no clock time; midnight of
+// `day` for a started (score) cell, so it sorts first.
 function parseStart(content, day) {
   const [y, mo, d] = day.split('-').map(Number);
-  if (/^\s*[A-Z]{2,3}\s+\d+\s*<br\s*\/?>\s*@[A-Z]{2,3}\s+\d+/i.test(content || '')) return new Date(y, mo - 1, d);
+  if (isStartedCell(content)) return new Date(y, mo - 1, d);
   const m = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(content || '');
   if (!m) return null;
   let h = Number(m[1]) % 12; if (m[3].toUpperCase() === 'PM') h += 12;
@@ -181,7 +187,7 @@ function parseScheduleRows(data, period) {
       const games = [];
       for (const c of cols) {
         const cell = row.cells && row.cells[c.index];
-        if (cell && cell.eventId) games.push(Object.assign({ day: c.day, start: parseStart(cell.content, c.day) }, parseGameText(cell.content)));
+        if (cell && cell.eventId) games.push(Object.assign({ day: c.day, start: parseStart(cell.content, c.day), started: isStartedCell(cell.content) }, parseGameText(cell.content)));
       }
       out[group].push({ id: row.scorer.scorerId || '', name: row.scorer.name || row.scorer.shortName || '', shortName: row.scorer.shortName || row.scorer.name || '', pos: row.scorer.posShortNames || '',
         injured: (row.scorer.icons || []).some(i => INJURY_ICON_TYPES.has(String(i.typeId))), tag: iconTag(row.scorer.icons), flag: rowFlag(row.scorer.icons),
@@ -208,9 +214,19 @@ function parseDayStatuses(data) {
 // 1.3.1: also statusNames {statusId: name} from each table's statusTotals, detail {scorerId: {statusId, eligible}} where
 // eligible = the row's eligibleStatusIds (Fantrax's own per-player answer under the league's rules; [] when absent),
 // and eligible on every slot.
+// 1.3.5: gp {scorerId: n} from the GP column — that day's games when the call was made BY_DATE for the day (see
+// rosterMsg); {} when the response has no GP column.
 function parseDayLineup(data) {
-  const names = Object.assign({}, POS_FALLBACK), slots = [], statuses = {}, statusNames = {}, detail = {};
+  const names = Object.assign({}, POS_FALLBACK), slots = [], statuses = {}, statusNames = {}, detail = {}, gp = {};
   const tables = data.tables || [];
+  for (const table of tables) {
+    const i = ((table.header && table.header.cells) || []).findIndex(c => c && (c.shortName || c.name) === 'GP');
+    if (i < 0) continue;
+    for (const row of table.rows || []) {
+      const sc = row.scorer, n = Number(row.cells && row.cells[i] && row.cells[i].content);
+      if (sc && sc.scorerId && Number.isFinite(n)) gp[sc.scorerId] = n;
+    }
+  }
   for (const table of tables) for (const st of table.statusTotals || []) if (st && st.id !== undefined && st.name) statusNames[String(st.id)] = String(st.name);
   for (const table of tables) for (const row of table.rows || []) {
     const sc = row.scorer;
@@ -231,7 +247,7 @@ function parseDayLineup(data) {
         name: sc ? (sc.name || sc.shortName || '') : '', shortName: sc ? (sc.shortName || sc.name || '') : '', group, eligible });
     }
   }
-  return { slots, statuses, statusNames, detail };
+  return { slots, statuses, statusNames, detail, gp };
 }
 // 1.3.1: the label of a roster status and its short form for tags / line prefixes ("Inj Res" → "IR", "Minors" → "MINORS").
 function statusLabel(statusNames, statusId) { return (statusNames && statusNames[String(statusId)]) || 'off-lineup'; }
@@ -243,10 +259,14 @@ function statusShort(name) {
 // day — already inside Played) or a player absent from that day's roster counts as ir, i.e. not at all.
 // detailByDay (1.3.1, optional): {day: {scorerId: {statusId, eligible}}} — each game also gets its raw statusId (null when
 // unknown) and the row gets `eligible` from the latest day that lists him ([] if none).
-function applyDayStatuses(rows, statusByDay, detailByDay) {
+// gpByDay (1.3.5, optional): {day: {scorerId: games that day}} — GP ≥ 1 marks the game started. It is the number
+// Fantrax's Played is summed from (the two matched exactly on 2026-09-30), so a game leaves Sched as it enters Played.
+function applyDayStatuses(rows, statusByDay, detailByDay, gpByDay) {
   return rows.map(row => {
     const games = row.games.map(g => {
       const day = statusByDay[g.day], out = Object.assign({}, g, { status: (day && day[row.id]) || 'ir' });
+      const gp = gpByDay && gpByDay[g.day] && gpByDay[g.day][row.id];
+      if (gp >= 1) out.started = true;
       if (detailByDay) { const d = detailByDay[g.day] && detailByDay[g.day][row.id]; out.statusId = d ? d.statusId : null; }
       return out;
     });
@@ -260,12 +280,12 @@ function applyDayStatuses(rows, statusByDay, detailByDay) {
 
 // ---------------------------------------------------------------- logic: compute
 
-// A game is pending (still to be played) when its day is after today, or today and not yet started.
-// A today game with no parseable start time is assumed not started.
-function isPending(game, today, now) {
+// A game is pending (still to be played) when its day is after today, or today and its cell does not show a score yet
+// (`started`: the day's GP, else the score cell) — whatever the clock says, since Fantrax's Played moves only at puck drop.
+function isPending(game, today) {
   if (game.day > today) return true;
   if (game.day < today) return false;
-  return game.start === null || game.start.getTime() > now.getTime();
+  return !game.started;
 }
 
 // 1.3.0: a row's expected return date, or null when it has none or it has already passed (a stale placeholder while
@@ -539,10 +559,13 @@ async function apiOnce(leagueId, msgs, fetchImpl, lenient) {
 }
 async function api(leagueId, method, data, fetchImpl) { return (await apiMulti(leagueId, [{ method, data }], fetchImpl))[0]; }
 
-function rosterMsg(leagueId, view, teamId, period, day) {
+// date (1.3.5, "YYYY-MM-DD"): stats for that one day only — what the roster page's "Days Back" pills send. The lineup
+// (slots, statuses) is unchanged; GP becomes that day's games, and Fantrax adds a totals row (no posId, no scorerId).
+function rosterMsg(leagueId, view, teamId, period, day, date) {
   const d = { leagueId, view };
   if (period !== null && period !== undefined) d.scoringPeriod = String(period);
   if (day !== null && day !== undefined) d.period = String(day);   // a lineup day; wins over scoringPeriod on Fantrax's side
+  if (date) Object.assign(d, { startDate: date, endDate: date, timeframeTypeCode: 'BY_DATE' });
   if (teamId) d.teamId = teamId;
   return { method: 'getTeamRosterInfo', data: d };
 }
@@ -572,7 +595,7 @@ async function loadTeam(leagueId, { teamId, period, day }, fetchImpl, now, retry
   const lineupDays = p.days.slice();                                 // every day, past ones too (the week panel shows them)
   const one = msg => apiMulti(leagueId, [msg], fetchImpl, retryDelay).then(r => r[0]);
   const [full, ...dayData] = await Promise.all([one(rosterMsg(leagueId, 'SCHEDULE_FULL', teamId))]
-    .concat(lineupDays.map(d => one(rosterMsg(leagueId, 'STATS', teamId, null, indexFromDay(start, d))))));
+    .concat(lineupDays.map(d => one(rosterMsg(leagueId, 'STATS', teamId, null, indexFromDay(start, d), d === today ? d : null)))));   // only today's GP decides anything (isPending)
   const covered = new Set(coveredDays(full, p));
   const rows = parseScheduleRows(full, p);
   let missing = p.days.filter(d => !covered.has(d));
@@ -587,11 +610,11 @@ async function loadTeam(leagueId, { teamId, period, day }, fetchImpl, now, retry
     missing = missing.filter(d => d > until);
   }
   for (const group of ['skaters', 'goalies']) for (const r of rows[group]) r.games.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
-  const statusByDay = {}, detailByDay = {}, lineups = {}, statusNames = {};
-  dayData.forEach((d, i) => { const l = parseDayLineup(d); lineups[lineupDays[i]] = l; statusByDay[lineupDays[i]] = l.statuses; detailByDay[lineupDays[i]] = l.detail; Object.assign(statusNames, l.statusNames); });
+  const statusByDay = {}, detailByDay = {}, gpByDay = {}, lineups = {}, statusNames = {};
+  dayData.forEach((d, i) => { const l = parseDayLineup(d); lineups[lineupDays[i]] = l; statusByDay[lineupDays[i]] = l.statuses; detailByDay[lineupDays[i]] = l.detail; gpByDay[lineupDays[i]] = l.gp; Object.assign(statusNames, l.statusNames); });
   return { teamId: g.teamId, teamName: g.teamName, period: p, lineups, statusNames, groups: {
-    skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay, detailByDay) },
-    goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay, detailByDay) },
+    skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay, detailByDay, gpByDay) },
+    goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay, detailByDay, gpByDay) },
   } };
 }
 
@@ -1140,7 +1163,7 @@ function start() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
-    parsePeriodList, parseGamesPerPos, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses, statusLabel, statusShort,
+    parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses, statusLabel, statusShort,
     compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, rosterKey, parseRoute,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates };
 }

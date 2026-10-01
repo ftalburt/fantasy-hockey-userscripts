@@ -86,7 +86,7 @@ test('dayString and periodDays use calendar days, not 24 h arithmetic', () => {
 
 // ---- compute ----
 function row(status, games, injured = false, extra = {}) { return Object.assign({ name: 'r', injured, flag: null, returnDate: null, games: games.map(g => Object.assign({ status }, g)) }, extra); }   // every game carries its day's status
-function at(day, h = 19) { const [y, m, d] = day.split('-').map(Number); return { day, start: new Date(y, m - 1, d, h, 0) }; }
+function at(day, h = 19, started = false) { const [y, m, d] = day.split('-').map(Number); return { day, start: new Date(y, m - 1, d, h, 0), started }; }
 const P1 = { id: 1, start: '2026-09-29', end: '2026-10-04', days: T.periodDays('2026-09-29', '2026-10-04') };
 const NOW_THU_18 = new Date(2026, 9, 1, 18, 0); // Thu Oct 1, 6 pm
 
@@ -98,8 +98,8 @@ test('compute: all games pending before the period starts', () => {
   assert.equal(r.perDay.some(d => d.crosses), false);
 });
 
-test('compute: mid-week — past days are started, today splits on start time', () => {
-  const rows = [row('active', [at('2026-09-29'), at('2026-10-01', 17), at('2026-10-01', 20), at('2026-10-03')])];
+test('compute: mid-week — past days are started, today splits on whether the game has started (score shown)', () => {
+  const rows = [row('active', [at('2026-09-29'), at('2026-10-01', 17, true), at('2026-10-01', 20), at('2026-10-03')])];
   const r = T.compute({ played: 2, max: 4, rows }, P1, NOW_THU_18);
   assert.equal(r.scheduled, 2, '8 pm today and Saturday');
   assert.deepEqual(r.status, { kind: 'ok', over: 0, unused: 0, bench: 0 });
@@ -136,6 +136,18 @@ test('compute: no max → nomax, left null, nothing NaN', () => {
   assert.equal(T.formatStatus(r.status), 'no games max');
   assert.deepEqual(r.perDay.map(d => d.crosses), [false, false, false, false, false, false]);
   assert.equal(r.perDay[3].cumulative, 6);
+});
+
+test('a game past its scheduled time that has not started (cell still shows the time) is pending', () => {
+  // 2026-09-30 6:38 pm: NYI@TOR scheduled 6:30 pm still read "@TOR<br/>Wed 6:30PM" and Horvat was not in Played yet;
+  // treating it as started dropped it from Sched and read "1 unused" instead of on track.
+  const day = '2026-09-30', now = new Date(2026, 8, 30, 18, 38);
+  const late = T.parseScheduleRows({ tables: [{ scGroup: '2010', header: { cells: [{ shortName: 'Wed 9/30' }] },
+    rows: [{ scorer: { scorerId: 'h', name: 'Bo Horvat' }, cells: [{ eventId: 'e', content: '@TOR<br/>Wed 6:30PM' }] }] }] },
+  { start: '2026-09-29', end: '2026-10-04' }).skaters[0].games[0];
+  assert.equal(T.isPending(late, day, now), true);
+  const r = T.compute({ played: 7, max: 52, rows: [row('active', [late])] }, { start: '2026-09-29', end: '2026-10-04', days: T.periodDays('2026-09-29', '2026-10-04') }, now);
+  assert.equal(r.scheduled, 1);
 });
 
 test('compute: a game today with no start time counts as pending', () => {
@@ -478,7 +490,7 @@ function weekTeam({ rows, goalies = [], lineups, statusNames = { '1': 'Active', 
     skaters: { played: 0, max: 52, rows: T.applyDayStatuses(rows, statusByDay, detailByDay) },
     goalies: { played: 0, max: 4, rows: T.applyDayStatuses(goalies, statusByDay, detailByDay) } } };
 }
-const game = (day, time, opp = '@XXX') => ({ day, start: T.parseStart(time, day), opp, time: time.replace(/^\w{3} /, '') });
+const game = (day, time, opp = '@XXX') => ({ day, start: T.parseStart(time, day), started: T.isStartedCell(time), opp, time: time.replace(/^\w{3} /, '') });
 const prow = (name, games, extra) => Object.assign({ id: 'id-' + name, name, shortName: name, pos: 'C', injured: false, tag: null, flag: null, returnDate: null, returnText: null, games }, extra);
 const slot = (pos, status, name, group = 'skaters') => ({ posId: pos, pos, status, id: name ? 'id-' + name : null, name: name || '', group });
 
@@ -743,7 +755,7 @@ test('offLineup: no candidate wording, two returning players share a candidate, 
   const rows = [
     prow('A', [g('2026-10-03', 'Sat 7:00PM', '3', 'ir')], { injured: true, flag: 'out', returnDate: '2026-10-02', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3' } }),
     prow('B', [g('2026-10-04', 'Sun 7:00PM', '3', 'ir')], { injured: true, flag: 'ir', returnDate: '2026-10-03', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3' } }),
-    prow('C', [g('2026-10-01', 'Thu 4:00PM', '3', 'ir')], { injured: true, flag: 'out', returnDate: '2026-10-01', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3' } }),   // 4 pm game, now is 6 pm
+    prow('C', [g('2026-10-01', 'XXX 1<br/>@YYY 0', '3', 'ir')], { injured: true, flag: 'out', returnDate: '2026-10-01', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3' } }),   // today's game has started (score shown)
     prow('Hurt', [g('2026-10-04', 'Sun 7:00PM', '1', 'active')], { injured: true, flag: 'out', returnDate: null, eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '1' } }),
   ];
   const team = { period: P1, statusNames: { '1': 'Active', '2': 'Reserve', '3': 'Inj Res' }, groups: { skaters: { played: 0, max: 52, rows }, goalies: { played: 0, max: 4, rows: [] } } };
@@ -793,10 +805,10 @@ test('offLineup: cleared means Fantrax no longer allows the slot, not "no injury
   assert.equal(T.formatOffLineup(x[1]), 'On IR, no longer IR-eligible: DtdIR, 1 game this period, not counted — Fantrax no longer allows him there; the roster is illegal until he moves');
 });
 test('weekView.off lists off-lineup players on pending days only (a cleared player is not shown on days already played)', () => {
-  const rows = [prow('Fiala', [game('2026-09-29', 'Tue 8:30PM'), game('2026-10-01', 'Thu 4:00PM'), game('2026-10-03', 'Sat 6:00PM')], { flag: null, pos: 'LW', eligible: ['1', '2'] })];
+  const rows = [prow('Fiala', [game('2026-09-29', 'Tue 8:30PM'), game('2026-10-01', 'XXX 1<br/>@YYY 0'), game('2026-10-03', 'Sat 6:00PM')], { flag: null, pos: 'LW', eligible: ['1', '2'] })];
   const day = { slots: [slot('LW', 'ir', 'Fiala')], statuses: { 'id-Fiala': 'ir' }, detail: { 'id-Fiala': { statusId: '3', eligible: ['1', '2'] } } };
   const w = T.weekView(weekTeam({ rows, lineups: { '2026-09-29': day, '2026-10-01': day, '2026-10-03': day } }), NOW_THU_18);
-  assert.deepEqual(w.days.map(d => d.off.map(o => o.name)), [[], [], [], [], ['Fiala'], []], 'Tue is past, Thu 4 pm has started at 6 pm, Sat is pending');
+  assert.deepEqual(w.days.map(d => d.off.map(o => o.name)), [[], [], [], [], ['Fiala'], []], 'Tue is past, Thu has started (score shown), Sat is pending');
 });
 test('offSections: one panel section per off-lineup status, titled by that status and its entries', () => {
   const e = (name, statusName, kind) => ({ name, statusName, kind });
@@ -809,10 +821,47 @@ test('offSections: one panel section per off-lineup status, titled by that statu
 test('a started game (Fantrax shows the live score, no clock time) is not pending', () => {
   // Opening night 2026-09-29: during FLA@CAR the cell was "FLA 0<br/>@CAR 0" and GAMES_PER_POS already counted it in Played.
   const day = '2026-09-29', now = new Date(2026, 8, 29, 16, 20);
-  const live = { day, start: T.parseStart('FLA 0<br/>@CAR 0', day) };
+  const cell = content => ({ day, start: T.parseStart(content, day), started: T.isStartedCell(content) });
+  const live = cell('FLA 0<br/>@CAR 0');
   assert.notEqual(live.start, null);
   assert.equal(T.isPending(live, day, now), false);
-  assert.equal(T.isPending({ day, start: T.parseStart('FLA 3<br/>@CAR 2 F/OT', day) }, day, now), false);
-  assert.equal(T.isPending({ day, start: T.parseStart('@TOR<br/>Tue 6:00PM', day) }, day, now), true);
-  assert.equal(T.isPending({ day, start: T.parseStart('@TOR', day) }, day, now), true);   // no time, no score: still assumed not started
+  assert.equal(T.isPending(cell('FLA 3<br/>@CAR 2 F/OT'), day, now), false);
+  assert.equal(T.isPending(cell('@TOR<br/>Tue 6:00PM'), day, now), true);
+  assert.equal(T.isPending(cell('@TOR<br/>Tue 4:00PM'), day, now), true);   // past its time, no score yet: late puck drop
+  assert.equal(T.isPending(cell('@TOR'), day, now), true);   // no time, no score: still assumed not started
+});
+
+// ---- 1.3.5: started = Fantrax's one-day GP (BY_DATE), the score cell as fallback ----
+// A STATS response asked with timeframeTypeCode BY_DATE for one day, shaped as seen 2026-09-30: the GP column is that
+// day's games, and Fantrax adds a bold totals row (a scorer with no scorerId, no posId, statusId "y").
+function statsByDate(players) {
+  const hdr = ['Age', 'Opp', 'FPts', 'FP/G', 'GP', 'G'].map(shortName => ({ shortName }));
+  const rows = players.map(([name, statusId, gp]) => ({ posId: '206', statusId, scorer: { scorerId: 'id-' + name, name, shortName: name },
+    cells: [{ content: '30' }, { content: '' }, { content: '0' }, { content: '0' }, { content: String(gp) }, { content: '0' }] }));
+  rows.push({ scorer: { team: '', rookie: false, minorsEligible: false }, bold: true, statusId: 'y', cells: hdr.map(() => ({ content: '9' })) });
+  return { tables: [{ scGroup: '2010', header: { cells: hdr }, rows }] };
+}
+test('parseDayLineup: gp per scorer from the GP column of a one-day stats response; the totals row is skipped', () => {
+  const l = T.parseDayLineup(statsByDate([['Horvat', '1', 1], ['Kempe', '1', 0], ['Fiala', '3', 0]]));
+  assert.deepEqual(l.gp, { 'id-Horvat': 1, 'id-Kempe': 0, 'id-Fiala': 0 });
+  assert.equal(l.slots.length, 3, 'totals row is not a slot');
+  assert.deepEqual(T.parseDayLineup(statsDay({ S: '1' })).gp, {}, 'no GP column: no numbers');
+});
+test('applyDayStatuses: a game whose player has GP that day has started, whatever the cell shows', () => {
+  const rows = [prow('H', [game('2026-09-30', 'Wed 6:30PM')]), prow('K', [game('2026-09-30', 'Wed 9:00PM')]), prow('M', [game('2026-09-30', 'PIT 1<br/>@PHI 0')])];
+  const statuses = { '2026-09-30': { 'id-H': 'active', 'id-K': 'active', 'id-M': 'active' } };
+  const out = T.applyDayStatuses(rows, statuses, undefined, { '2026-09-30': { 'id-H': 1, 'id-K': 0 } });
+  assert.deepEqual(out.map(r => r.games[0].started), [true, false, true], 'GP 1 → started; GP 0 and a time → not; no GP but a score → started (fallback)');
+  const now = new Date(2026, 8, 30, 18, 50);
+  const r = T.compute({ played: 8, max: 52, rows: out }, { start: '2026-09-29', end: '2026-10-04', days: T.periodDays('2026-09-29', '2026-10-04') }, now);
+  assert.equal(r.scheduled, 1, 'only Kempe is still to play');
+});
+test('loadTeam asks today\'s lineup call for today\'s games only (BY_DATE), other days as before', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = n === 3 ? statsByDate([['S', '1', 1]]) : statsDay({ S: '1' });
+  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: { games: { '2026-10-01': 'Thu 4:00PM', '2026-10-03': 'Sat 7:00PM' } } }) }, stats));
+  const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18);   // Thu Oct 1 = lineup day 3
+  const st = f.calls.filter(c => c.data.view === 'STATS');
+  assert.deepEqual(st.find(c => c.data.period === '3').data, { leagueId: 'abc', view: 'STATS', period: '3', startDate: '2026-10-01', endDate: '2026-10-01', timeframeTypeCode: 'BY_DATE' });
+  assert.ok(st.filter(c => c.data.period !== '3').every(c => !('timeframeTypeCode' in c.data)));
+  assert.deepEqual(t.groups.skaters.rows[0].games.map(g => [g.day, g.started]), [['2026-10-01', true], ['2026-10-03', false]]);
 });
