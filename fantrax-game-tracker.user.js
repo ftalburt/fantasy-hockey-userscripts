@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.5
+// @version      1.3.6
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -267,6 +267,7 @@ function applyDayStatuses(rows, statusByDay, detailByDay, gpByDay) {
       const day = statusByDay[g.day], out = Object.assign({}, g, { status: (day && day[row.id]) || 'ir' });
       const gp = gpByDay && gpByDay[g.day] && gpByDay[g.day][row.id];
       if (gp >= 1) out.started = true;
+      if (typeof gp === 'number') out.gp = gp;   // 1.3.6: that day's games for him, as Fantrax counts them into Played
       if (detailByDay) { const d = detailByDay[g.day] && detailByDay[g.day][row.id]; out.statusId = d ? d.statusId : null; }
       return out;
     });
@@ -440,14 +441,18 @@ function offSections(off) {
 
 // The week panel's model: for each period day, the active slots in lineup order (kind game / idle / open / out), the
 // goalie slots apart, the reserve players who have a game that day (bench), and counts. A day whose lineup was not
-// loaded has slots === null. `games` counts active games by healthy players over the period, per group.
+// loaded has slots === null. `games` counts the period's active games per group: by that day's GP once a game is under
+// way or played (1.3.6, so it adds up to Played + Sched), else by healthy players / return dates.
 function weekView(team, now, opts = {}) {
   const today = dayString(now);
   const rowById = {};
   for (const g of ['skaters', 'goalies']) for (const r of team.groups[g].rows) rowById[r.id] = r;
   const games = { skaters: 0, goalies: 0 };
   // 1.3.0: kind of a row's game that day — game / out / ret (counted because of its expected return date)
-  const gameKind = row => !countsGame(row, { day }, today, opts) ? 'out' : (opts.returnDates && effectiveReturnDate(row, today)) ? 'ret' : 'game';
+  // 1.3.6: an active game already under way or played goes by that day's GP (what Played counts), never by today's flag:
+  // a player hurt since kept the games he played, a scratched one (GP 0) did not get one.
+  const gameKind = (row, game, active) => active && game && typeof game.gp === 'number' && !isPending(game, today) ? (game.gp >= 1 ? 'game' : 'out')
+    : !countsGame(row, { day }, today, opts) ? 'out' : (opts.returnDates && effectiveReturnDate(row, today)) ? 'ret' : 'game';
   // 1.3.1: off-lineup entries (IR etc.) by row id; listed per day from their date (back) or every day (cleared), never counted
   const offById = {};
   for (const e of offLineup(team, now, opts)) offById[e.id] = e;
@@ -469,12 +474,12 @@ function weekView(team, now, opts = {}) {
       const base = { pos: s.pos, id: s.id, name: s.name, shortName: s.shortName || s.name, group: s.group, opp: game ? game.opp : '', time: game ? game.time : '', start: game ? game.start : null, tag: row ? row.tag : null, returnText: row ? row.returnText || null : null };
       if (s.status === 'active') {
         let kind;
-        if (!s.id) kind = 'open'; else if (!game) kind = 'idle'; else kind = gameKind(row);
+        if (!s.id) kind = 'open'; else if (!game) kind = 'idle'; else kind = gameKind(row, game, true);
         if (s.group !== 'goalies') { counts[kind === 'game' ? 'playing' : kind]++; if (kind === 'ret') counts.playing++; }   // the header counts skater slots; goalies are listed apart
         if (kind === 'game' || kind === 'ret') games[s.group]++;
         (s.group === 'goalies' ? goalies : slots).push(Object.assign(base, { kind }));
       } else if (s.status === 'reserve' && game) {
-        const kind = gameKind(row);
+        const kind = gameKind(row, game, false);
         // a flagged reserve player is listed only when a return date is in play (struck before it, counted from it)
         if (kind !== 'out' || (opts.returnDates && effectiveReturnDate(row, today))) bench.push(Object.assign(base, { kind }));
       }
@@ -595,23 +600,34 @@ async function loadTeam(leagueId, { teamId, period, day }, fetchImpl, now, retry
   const lineupDays = p.days.slice();                                 // every day, past ones too (the week panel shows them)
   const one = msg => apiMulti(leagueId, [msg], fetchImpl, retryDelay).then(r => r[0]);
   const [full, ...dayData] = await Promise.all([one(rosterMsg(leagueId, 'SCHEDULE_FULL', teamId))]
-    .concat(lineupDays.map(d => one(rosterMsg(leagueId, 'STATS', teamId, null, indexFromDay(start, d), d === today ? d : null)))));   // only today's GP decides anything (isPending)
+    .concat(lineupDays.map(d => one(rosterMsg(leagueId, 'STATS', teamId, null, indexFromDay(start, d), d <= today ? d : null)))));   // 1.3.6: every day up to today asks that day's GP
+  const statusByDay = {}, detailByDay = {}, gpByDay = {}, lineups = {}, statusNames = {};
+  dayData.forEach((d, i) => {
+    const day = lineupDays[i], l = parseDayLineup(d);
+    lineups[day] = l; statusByDay[day] = l.statuses; detailByDay[day] = l.detail; Object.assign(statusNames, l.statusNames);
+    if (day <= today) gpByDay[day] = l.gp;                           // a later day's GP column is the season's, not the day's
+  });
   const covered = new Set(coveredDays(full, p));
   const rows = parseScheduleRows(full, p);
-  let missing = p.days.filter(d => !covered.has(d));
-  while (missing.length) {                                           // 7 columns per SCHEDULE_PERIOD call
-    const chunk = parseScheduleRows(await one(rosterMsg(leagueId, 'SCHEDULE_PERIOD', teamId, null, indexFromDay(start, missing[0]))), p);
-    const until = addDays(missing[0], 6);
+  // A SCHEDULE_PERIOD call (7 columns) lists the roster OF THE DAY it is asked for (verified 2026-10-03: the Sep 29 call
+  // had no goalie added Sep 30). 1.3.6: so a new call starts at every uncovered day whose lineup names someone the
+  // previous call's day did not; the calls run in parallel and merge in day order, never overwriting a game already found.
+  const chunkDays = [];
+  let chunkIds = null, chunkEnd = null;
+  for (const d of p.days.filter(x => !covered.has(x))) {
+    const ids = Object.keys(statusByDay[d] || {});
+    if (chunkEnd === null || d > chunkEnd || ids.some(id => !chunkIds.has(id))) { chunkDays.push(d); chunkIds = new Set(ids); chunkEnd = addDays(d, 6); }
+  }
+  const chunks = await Promise.all(chunkDays.map(d => one(rosterMsg(leagueId, 'SCHEDULE_PERIOD', teamId, null, indexFromDay(start, d)))));
+  chunks.forEach((data, i) => {
+    const from = chunkDays[i], until = addDays(from, 6), chunk = parseScheduleRows(data, p);
     for (const group of ['skaters', 'goalies']) for (const r of chunk[group]) {
       let target = rows[group].find(x => x.id === r.id);
       if (!target) { target = { id: r.id, name: r.name, shortName: r.shortName, pos: r.pos, injured: r.injured, tag: r.tag, flag: r.flag, returnDate: null, returnText: null, games: [] }; rows[group].push(target); }
-      for (const gm of r.games) if (gm.day >= missing[0] && gm.day <= until && !target.games.some(x => x.day === gm.day)) target.games.push(gm);
+      for (const gm of r.games) if (gm.day >= from && gm.day <= until && !covered.has(gm.day) && !target.games.some(x => x.day === gm.day)) target.games.push(gm);
     }
-    missing = missing.filter(d => d > until);
-  }
+  });
   for (const group of ['skaters', 'goalies']) for (const r of rows[group]) r.games.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
-  const statusByDay = {}, detailByDay = {}, gpByDay = {}, lineups = {}, statusNames = {};
-  dayData.forEach((d, i) => { const l = parseDayLineup(d); lineups[lineupDays[i]] = l; statusByDay[lineupDays[i]] = l.statuses; detailByDay[lineupDays[i]] = l.detail; gpByDay[lineupDays[i]] = l.gp; Object.assign(statusNames, l.statusNames); });
   return { teamId: g.teamId, teamName: g.teamName, period: p, lineups, statusNames, groups: {
     skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay, detailByDay, gpByDay) },
     goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay, detailByDay, gpByDay) },

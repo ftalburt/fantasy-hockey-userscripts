@@ -856,12 +856,49 @@ test('applyDayStatuses: a game whose player has GP that day has started, whateve
   const r = T.compute({ played: 8, max: 52, rows: out }, { start: '2026-09-29', end: '2026-10-04', days: T.periodDays('2026-09-29', '2026-10-04') }, now);
   assert.equal(r.scheduled, 1, 'only Kempe is still to play');
 });
-test('loadTeam asks today\'s lineup call for today\'s games only (BY_DATE), other days as before', async () => {
+test('loadTeam asks the lineup calls of today and past days for that day\'s games (BY_DATE), later days as before', async () => {
   const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = n === 3 ? statsByDate([['S', '1', 1]]) : statsDay({ S: '1' });
   const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: { games: { '2026-10-01': 'Thu 4:00PM', '2026-10-03': 'Sat 7:00PM' } } }) }, stats));
   const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18);   // Thu Oct 1 = lineup day 3
   const st = f.calls.filter(c => c.data.view === 'STATS');
   assert.deepEqual(st.find(c => c.data.period === '3').data, { leagueId: 'abc', view: 'STATS', period: '3', startDate: '2026-10-01', endDate: '2026-10-01', timeframeTypeCode: 'BY_DATE' });
-  assert.ok(st.filter(c => c.data.period !== '3').every(c => !('timeframeTypeCode' in c.data)));
+  assert.deepEqual(st.filter(c => c.data.timeframeTypeCode === 'BY_DATE').map(c => [c.data.period, c.data.startDate]), [['1', '2026-09-29'], ['2', '2026-09-30'], ['3', '2026-10-01']], '1.3.6: past days too');
   assert.deepEqual(t.groups.skaters.rows[0].games.map(g => [g.day, g.started]), [['2026-10-01', true], ['2026-10-03', false]]);
+});
+
+// ---- 1.3.6: the week panel adds up to Played + Sched ----
+test('loadTeam: a schedule call per uncovered day whose lineup names someone the previous call did not (added since)', async () => {
+  // SCHEDULE_PERIOD lists the roster of the day asked: Hart joined Wed, so Tuesday's call has no row for him
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' }, n >= 2 ? { Hart: '1' } : {});
+  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: {} }, { Hart: { games: { '2026-10-03': 'Sat 7:00PM' } } }),
+    'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: { games: { '2026-09-29': 'Tue 4:00PM' } } }),
+    'SCHEDULE_PERIOD@2': scheduleFrom('2026-09-30', 7, { S: { games: { '2026-09-29': 'never seen' } } }, { Hart: { games: { '2026-09-30': 'Wed 7:00PM', '2026-10-03': 'Sat 7:00PM' } } }) }, stats));
+  const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18);
+  assert.deepEqual(f.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').map(c => c.data.period), ['1', '2']);
+  assert.deepEqual(t.groups.goalies.rows[0].games.map(g => [g.day, g.status]), [['2026-09-30', 'active'], ['2026-10-03', 'active']], 'Wednesday from the second call; Saturday once, from the 30-day schedule');
+  assert.deepEqual(t.groups.skaters.rows[0].games.map(g => g.day), ['2026-09-29']);
+  const same = {}; for (let n = 1; n <= 6; n++) same['STATS@' + n] = statsDay({ S: '1' });
+  const g = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: {} }), 'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: {} }) }, same));
+  await T.loadTeam('abc', { teamId: null, period: 1, day: null }, g, NOW_THU_18);
+  assert.deepEqual(g.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').map(c => c.data.period), ['1'], 'same roster: one call as before');
+});
+test('weekView: a game under way or played counts by that day\'s GP, not by the flag the player has today', () => {
+  // Barkov played Tue and is Out today; Sanderson is DTD today and his game is under way; Scratch had GP 0 Tue
+  const tue = '2026-09-29', thu = '2026-10-01';
+  const out = { injured: true, flag: 'out', tag: { text: 'OUT', kind: 'out' } };
+  const rows = [prow('Barkov', [game(tue, 'Tue 4:00PM'), game('2026-10-03', 'Sat 7:00PM')], out), prow('Scratch', [game(tue, 'Tue 4:00PM')]),
+    prow('Sanderson', [game(thu, 'OTT 2<br/>@TOR 1')], { injured: true, flag: 'dtd', tag: { text: 'DTD', kind: 'out' } })];
+  const lineup = names => ({ statuses: Object.fromEntries(names.map(n => ['id-' + n, 'active'])), slots: names.map(n => slot('C', 'active', n)) });
+  const lineups = { [tue]: lineup(['Barkov', 'Scratch']), [thu]: lineup(['Sanderson']), '2026-10-03': lineup(['Barkov']) };
+  const team = weekTeam({ rows, lineups });
+  const gp = { [tue]: { 'id-Barkov': 1, 'id-Scratch': 0 }, [thu]: { 'id-Sanderson': 1 } };
+  const statuses = Object.fromEntries(Object.entries(lineups).map(([d, l]) => [d, l.statuses]));
+  team.groups.skaters.rows = T.applyDayStatuses(rows, statuses, undefined, gp);
+  for (const opts of [{}, { returnDates: true }]) {
+    const w = T.weekView(team, NOW_THU_18, opts);
+    assert.deepEqual(w.days[0].slots.map(s => [s.name, s.kind]), [['Barkov', 'game'], ['Scratch', 'out']]);
+    assert.deepEqual(w.days[2].slots.map(s => [s.name, s.kind]), [['Sanderson', 'game']]);
+    assert.deepEqual(w.days[4].slots.map(s => [s.name, s.kind]), [['Barkov', 'out']], 'a game still to come goes by the flag, as before');
+    assert.equal(w.games.skaters, 2);
+  }
 });
