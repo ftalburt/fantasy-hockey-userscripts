@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.6
+// @version      1.3.7
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -300,6 +300,15 @@ function countsGame(row, game, today, opts) {
   return date ? game.day >= date : !row.injured;
 }
 
+// 1.3.6: an active game under way or played, when that day's GP is known, counted iff he got a GP (what Played counts),
+// whatever his flag is today: a player hurt since kept the games he played, a scratched one (GP 0) got none. Otherwise
+// the flag / return-date rule. → {counted, by: 'gp' | 'date' | 'flag'}; used by the week panel and the grid cells alike.
+function activeGame(row, game, today, opts) {
+  if (typeof game.gp === 'number' && !isPending(game, today)) return { counted: game.gp >= 1, by: 'gp' };
+  const counted = countsGame(row, game, today, opts);
+  return { counted, by: counted && opts && opts.returnDates && effectiveReturnDate(row, today) ? 'date' : 'flag' };
+}
+
 function compute(group, period, now, opts = {}) {
   const today = dayString(now);
   const active = {}, pending = {};
@@ -449,10 +458,11 @@ function weekView(team, now, opts = {}) {
   for (const g of ['skaters', 'goalies']) for (const r of team.groups[g].rows) rowById[r.id] = r;
   const games = { skaters: 0, goalies: 0 };
   // 1.3.0: kind of a row's game that day — game / out / ret (counted because of its expected return date)
-  // 1.3.6: an active game already under way or played goes by that day's GP (what Played counts), never by today's flag:
-  // a player hurt since kept the games he played, a scratched one (GP 0) did not get one.
-  const gameKind = (row, game, active) => active && game && typeof game.gp === 'number' && !isPending(game, today) ? (game.gp >= 1 ? 'game' : 'out')
-    : !countsGame(row, { day }, today, opts) ? 'out' : (opts.returnDates && effectiveReturnDate(row, today)) ? 'ret' : 'game';
+  // 1.3.6: an active slot's game goes through activeGame (by that day's GP once under way); a bench game by the flag
+  const gameKind = (row, game, active) => {
+    if (active) { const a = activeGame(row, game, today, opts); return !a.counted ? 'out' : a.by === 'date' ? 'ret' : 'game'; }
+    return !countsGame(row, { day }, today, opts) ? 'out' : (opts.returnDates && effectiveReturnDate(row, today)) ? 'ret' : 'game';
+  };
   // 1.3.1: off-lineup entries (IR etc.) by row id; listed per day from their date (back) or every day (cleared), never counted
   const offById = {};
   for (const e of offLineup(team, now, opts)) offById[e.id] = e;
@@ -1060,6 +1070,10 @@ const CELL_STYLE = {
   reserve: {},
   ir: { opacity: '0.35' },
 };
+function activeTitle(row, a) {
+  if (a.by === 'gp') return a.counted ? 'active that day, played' : 'active that day, did not play';
+  return a.counted ? (a.by === 'date' ? 'active that day, counted from the expected return date' : 'active that day') : 'active that day, but ' + (row.tag ? row.tag.text : 'out');
+}
 function clearCellStyles(table) {
   for (const c of table.querySelectorAll('[data-fgt-cell]')) { for (const k of ['background', 'boxShadow', 'textDecoration', 'opacity']) c.style[k] = ''; c.removeAttribute('data-fgt-cell'); c.removeAttribute('title'); }
 }
@@ -1085,11 +1099,11 @@ function renderCellStatus(team, key, now, opts) {
       for (const { index, day } of days) {
         const cell = cells[index], game = row.games.find(g => g.day === day);
         if (!cell || !game || !game.status || game.status === 'ir' && !team.lineups[day]) continue;
-        const counted = countsGame(row, game, today, opts), byDate = counted && !!(opts && opts.returnDates && effectiveReturnDate(row, today));
-        const st = game.status === 'active' ? (counted ? CELL_STYLE.active : CELL_STYLE.activeOut) : game.status === 'reserve' ? CELL_STYLE.reserve : CELL_STYLE.ir;
+        const a = activeGame(row, game, today, opts);   // 1.3.6: a game under way or played goes by that day's GP
+        const st = game.status === 'active' ? (a.counted ? CELL_STYLE.active : CELL_STYLE.activeOut) : game.status === 'reserve' ? CELL_STYLE.reserve : CELL_STYLE.ir;
         Object.assign(cell.style, st);
         cell.setAttribute('data-fgt-cell', key);
-        cell.setAttribute('title', game.status === 'active' ? (counted ? (byDate ? 'active that day, counted from the expected return date' : 'active that day') : 'active that day, but ' + (row.tag ? row.tag.text : 'out')) : game.status === 'reserve' ? 'on reserve that day' : 'IR / not on the roster that day');
+        cell.setAttribute('title', game.status === 'active' ? activeTitle(row, a) : game.status === 'reserve' ? 'on reserve that day' : 'IR / not on the roster that day');
       }
     }
     table.setAttribute('data-fgt-cells', key);
@@ -1180,7 +1194,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses, statusLabel, statusShort,
-    compute, formatStatus, isPending, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, rosterKey, parseRoute,
+    compute, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, rosterKey, parseRoute,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }

@@ -902,3 +902,14 @@ test('weekView: a game under way or played counts by that day\'s GP, not by the 
     assert.equal(w.games.skaters, 2);
   }
 });
+test('activeGame / activeTitle: the grid cell of a game under way or played goes by that day\'s GP, not today\'s flag', () => {
+  const dtd = prow('Sanderson', [], { injured: true, flag: 'dtd', tag: { text: 'DTD', kind: 'out' } });
+  const live = Object.assign(game('2026-10-01', 'OTT 3<br/>@TOR 2'), { started: true, gp: 1 }), later = game('2026-10-03', 'Sat 7:00PM');
+  for (const opts of [{}, { returnDates: true }]) {
+    assert.deepEqual(T.activeGame(dtd, live, '2026-10-01', opts), { counted: true, by: 'gp' });
+    assert.deepEqual(T.activeGame(dtd, later, '2026-10-01', opts), { counted: false, by: 'flag' }, 'a game still to come: the flag, as before');
+  }
+  assert.equal(T.activeTitle(dtd, T.activeGame(dtd, live, '2026-10-01', {})), 'active that day, played');
+  assert.deepEqual(T.activeGame(prow('Scratch', []), Object.assign(game('2026-09-29', 'Tue 4:00PM'), { gp: 0 }), '2026-10-01', {}), { counted: false, by: 'gp' });
+  assert.equal(T.activeTitle(dtd, T.activeGame(dtd, later, '2026-10-01', {})), 'active that day, but DTD');
+});
