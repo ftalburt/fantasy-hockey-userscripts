@@ -913,3 +913,30 @@ test('activeGame / activeTitle: the grid cell of a game under way or played goes
   assert.deepEqual(T.activeGame(prow('Scratch', []), Object.assign(game('2026-09-29', 'Tue 4:00PM'), { gp: 0 }), '2026-10-01', {}), { counted: false, by: 'gp' });
   assert.equal(T.activeTitle(dtd, T.activeGame(dtd, later, '2026-10-01', {})), 'active that day, but DTD');
 });
+
+// 1.3.8: Fantrax reuses the roster table body across views, so leaving Schedule - Week for Trends/Stats left the two
+// per-day footer rows behind (pinned to the Week header's widths, they pushed every row off its header). A minimal fake
+// DOM: one table whose header has no day columns and whose body still holds the stale rows.
+test('renderPerDay: a table with no day columns drops stale perday rows', () => {
+  const fakeEl = (text = '') => ({ textContent: text, children: [], attrs: {}, parent: null,
+    getBoundingClientRect: () => ({ width: 100 }),
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); },
+    appendChild(c) { c.parent = this; this.children.push(c); return c; } });
+  const header = fakeEl(), body = fakeEl(), table = fakeEl();
+  const cells = ['Skaters', 'Status', 'FP/G'].map(t => fakeEl(t));
+  header.querySelector = () => cells[0];
+  header.querySelectorAll = () => cells;
+  for (const label of ['Active games', 'Running total']) { const r = body.appendChild(fakeEl(label)); r.attrs['data-fgt'] = 'perday'; }
+  body.appendChild(fakeEl('A. Player'));   // one of Fantrax's own rows, which must stay
+  table.querySelector = sel => sel === '.i-table__row.i-table__header' ? header : sel === '.i-table__body' ? body : null;
+  table.querySelectorAll = sel => {
+    const m = /^\[data-fgt="(\w+)"\]$/.exec(sel);
+    return m ? body.children.filter(c => c.attrs['data-fgt'] === m[1]) : [];
+  };
+  const prev = globalThis.document;
+  globalThis.document = { querySelectorAll: () => [table] };
+  try {
+    T.renderPerDay({ period: { start: '2026-10-12', end: '2026-10-18' }, groups: {} }, 'k', new Date('2026-10-17T12:00:00Z'), {});
+  } finally { if (prev === undefined) delete globalThis.document; else globalThis.document = prev; }
+  assert.deepEqual(body.children.map(c => c.textContent), ['A. Player']);
+});

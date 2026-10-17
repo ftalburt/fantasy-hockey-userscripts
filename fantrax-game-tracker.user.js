@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.3.7
+// @version      1.3.8
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -27,6 +27,8 @@
  * 1.3.4: switching leagues inside one tab re-renders the roster page (its render key now carries the league).
  * 1.3.5: a game past its scheduled time stays in Sched until it starts. Started = Fantrax's own GP for the day (today's
  *        lineup call asks for that day's stats), the score cell as fallback — never the clock.
+ * 1.3.8: leaving Schedule - Week for another roster view (Trends, Stats…) removes the per-day footer rows, which had
+ *        stayed in Fantrax's reused table body and pushed every row off its header.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -882,6 +884,7 @@ function footerRow(label, values, key, widths) {
 
 function renderPerDay(team, key, now, opts) {
   for (const table of document.querySelectorAll(SEL.rosterTables)) {
+    removeOwn(table, 'perday');                            // 1.3.8: first, so a view without day columns drops stale rows
     const headerRow = table.querySelector(SEL.rosterHeaderRow), body = table.querySelector(SEL.rosterBody);
     if (!headerRow || !body) continue;
     const first = headerRow.querySelector(SEL.cell);
@@ -898,7 +901,6 @@ function renderPerDay(team, key, now, opts) {
       active.set(index, { text: team.lineups && team.lineups[day] ? String(d.active) : '' });
       cumulative.set(index, d.cumulative === null ? { text: '' } : { text: String(d.cumulative), color: d.crosses ? COLORS.over : (r.max !== null && d.cumulative > r.max ? COLORS.over : null) });
     }
-    removeOwn(table, 'perday');
     body.appendChild(footerRow('Active games', active, key, widths));
     body.appendChild(footerRow('Running total' + (r.max === null ? '' : ' (max ' + r.max + ')'), cumulative, key, widths));
   }
@@ -1194,7 +1196,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, applyDayStatuses, statusLabel, statusShort,
-    compute, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, rosterKey, parseRoute,
+    compute, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }
