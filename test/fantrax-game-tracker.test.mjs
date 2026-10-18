@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { mkTeam as mkLineupTeam, MOCK as LINEUP_MOCK } from './lineup-fixtures.mjs';
 const T = createRequire(import.meta.url)('../fantrax-game-tracker.user.js');
 
 // ---- fixture builders (hand-written shapes copied from the 2026-09-23 spec; names are made up) ----
@@ -66,6 +67,13 @@ test('parseGamesPerPos reads played, max, team and period', () => {
   assert.deepEqual(g.played, { skaters: 12, goalies: 2 });
   assert.deepEqual(g.max, { skaters: 52, goalies: 4 });
   assert.equal(g.periods.length, 4);
+});
+
+test('parseGamesPerPos: ownTeam from myTeamIds (1.4.0), null when the response has none', () => {
+  const d = gamesPerPos();
+  assert.equal(T.parseGamesPerPos(d).ownTeam, null);
+  assert.equal(T.parseGamesPerPos(Object.assign({}, d, { myTeamIds: ['teamA'] })).ownTeam, true);
+  assert.equal(T.parseGamesPerPos(Object.assign({}, d, { myTeamIds: ['teamB'] })).ownTeam, false);
 });
 
 test('parseGamesPerPos: "No max" becomes null, missing table becomes null', () => {
@@ -455,6 +463,19 @@ test('parseScheduleRows keeps opponent, time, the player\'s positions and his in
   assert.deepEqual(r.skaters[0].games[0].time, '4:00PM');
 });
 
+test('parseDayLineup keeps each scorer\'s posIds, row posId and miscData for editing', () => {
+  const data = schedule({ days: [], skaters: [{ name: 'A', statusId: '2', posId: '206', posIds: ['206'] }] });
+  data.miscData = { applyToFuturePeriods: true, illegalRosterMsgsText: 'too many', statusTotals: [{ id: '1', name: 'Active', max: 21, total: 20 }] };
+  data.tables[0].rows[0].eligiblePosIds = ['206', '208']; data.tables[0].rows[0].secondary = true;
+  Object.assign(data.tables[0].rows[0].scorer, { posIds: ['206', '208'], defaultPosId: '206', disableLineupChange: true });
+  const l = T.parseDayLineup(data);
+  assert.deepEqual(l.detail['id-A'], { statusId: '2', eligible: ['1', '2'], posId: '206', eligiblePosIds: ['206', '208'], posIds: ['206', '208'], posIdsNoFlex: ['206'], defaultPosId: '206', secondary: true, disabled: true });
+  assert.deepEqual(l.misc, { applyToFuturePeriods: true, illegalText: 'too many', statusTotals: [{ id: '1', name: 'Active', max: 21, total: 20 }] });
+  const bare = T.parseDayLineup(schedule({ days: [], skaters: [{ name: 'A' }] }));
+  assert.deepEqual(bare.misc, { applyToFuturePeriods: null, illegalText: null, statusTotals: null });
+  assert.equal(bare.detail['id-A'].secondary, false); assert.equal(bare.detail['id-A'].defaultPosId, null);
+});
+
 test('parseDayLineup: slots in Fantrax order with position labels, an open active slot, the empty-reserve row skipped', () => {
   const data = schedule({ days: [], skaters: [
     { name: 'A', posId: '206' },
@@ -697,14 +718,15 @@ test('explainTeam: the bench note follows the games that changed; Out with games
 test('parseDayLineup: status names from statusTotals, eligibility per slot, raw detail per scorer', () => {
   const l = T.parseDayLineup(schedule({ days: [], skaters: [{ name: 'Hurt', statusId: '3', posId: '206', eligible: ['1', '2', '3'] }, { name: 'Fine', statusId: '1', posId: '203' }] }));
   assert.deepEqual(l.statusNames, { '1': 'Active', '2': 'Reserve', '3': 'Inj Res' });
-  assert.deepEqual(l.detail, { 'id-Hurt': { statusId: '3', eligible: ['1', '2', '3'] }, 'id-Fine': { statusId: '1', eligible: ['1', '2'] } });
+  const se = d => ({ statusId: d.statusId, eligible: d.eligible });   // 1.4.0: detail also carries the editing fields (own test below)
+  assert.deepEqual({ 'id-Hurt': se(l.detail['id-Hurt']), 'id-Fine': se(l.detail['id-Fine']) }, { 'id-Hurt': { statusId: '3', eligible: ['1', '2', '3'] }, 'id-Fine': { statusId: '1', eligible: ['1', '2'] } });
   assert.deepEqual(l.slots.map(s => s.eligible), [['1', '2', '3'], ['1', '2']]);
 });
 test('parseDayLineup without statusTotals or eligibleStatusIds: empty names, empty eligibility, no throw', () => {
   const data = schedule({ days: [], skaters: [{ name: 'X', statusId: '3', posId: '206' }], statusTotals: null });
   for (const t of data.tables) for (const r of t.rows) delete r.eligibleStatusIds;
   const l = T.parseDayLineup(data);
-  assert.deepEqual([l.statusNames, l.detail['id-X'], l.slots[0].eligible], [{}, { statusId: '3', eligible: [] }, []]);
+  assert.deepEqual([l.statusNames, { statusId: l.detail['id-X'].statusId, eligible: l.detail['id-X'].eligible }, l.slots[0].eligible], [{}, { statusId: '3', eligible: [] }, []]);
   assert.equal(T.statusLabel(l.statusNames, '3'), 'off-lineup');
 });
 test('statusShort: initials for multi-word names, upper-case otherwise', () => {
@@ -763,6 +785,31 @@ test('offLineup: no candidate wording, two returning players share a candidate, 
   assert.deepEqual(x.map(e => [e.name, e.swapCandidates.map(c => c.name)]), [['A', ['Hurt']], ['B', ['Hurt']]], 'C has no pending game from his date; Hurt serves both');
   const none = T.offLineup({ period: P1, statusNames: team.statusNames, groups: { skaters: { played: 0, max: 52, rows: [rows[0], rows[3]].map(r => Object.assign({}, r, { eligible: r.name === 'Hurt' ? ['1', '2'] : r.eligible })) }, goalies: { played: 0, max: 4, rows: [] } } }, NOW_THU_18, { returnDates: true });
   assert.equal(T.formatOffLineup(none[0]), 'On IR, back this period: A Fri 10/2, 1 game, not counted · no IR-eligible player to swap: activating him needs a drop');
+});
+test('formatOffLineup: a swap candidate shared by two lines says he can take only one of the spots (2026-10-18)', () => {
+  const g = (day, time) => Object.assign(game(day, time), { statusId: '3', status: 'ir' });
+  const rows = [
+    prow('A', [g('2026-10-03', 'Sat 7:00PM')], { injured: true, flag: 'out', returnDate: '2026-10-02', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3' } }),
+    prow('B', [g('2026-10-04', 'Sun 7:00PM')], { injured: true, flag: 'ir', returnDate: '2026-10-03', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3' } }),
+    prow('Hurt', [Object.assign(game('2026-10-04', 'Sun 7:00PM'), { statusId: '1', status: 'active' })], { injured: true, flag: 'out', returnDate: null, eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '1' } }),
+  ];
+  const team = { period: P1, statusNames: { '1': 'Active', '2': 'Reserve', '3': 'Inj Res' }, groups: { skaters: { played: 0, max: 52, rows }, goalies: { played: 0, max: 4, rows: [] } } };
+  const x = T.offLineup(team, NOW_THU_18, { returnDates: true });
+  assert.equal(T.formatOffLineup(x[0], x), 'On IR, back this period: A Fri 10/2, 1 game, not counted · free IR swap: Hurt (Out; also the swap for B, one spot only) could take his spot');
+  assert.equal(T.formatOffLineup(x[1], x), 'On IR, back this period: B Sat 10/3, 1 game, not counted · free IR swap: Hurt (Out; also the swap for A, one spot only) could take his spot');
+  assert.equal(T.formatOffLineup(x[0]), 'On IR, back this period: A Fri 10/2, 1 game, not counted · free IR swap: Hurt (Out) could take his spot');
+  assert.equal(x[0].swapCandidates[0].id, 'id-Hurt');   // candidates are matched by id, not by an undefined === undefined
+  const other = Object.assign({}, x[1], { swapCandidates: [{ id: 'id-Other', name: 'Other', flagWord: 'Out' }] });
+  assert.equal(T.formatOffLineup(x[0], [x[0], other]), 'On IR, back this period: A Fri 10/2, 1 game, not counted · free IR swap: Hurt (Out) could take his spot', 'a different candidate is not "also"');
+});
+test('isWholeSeason: the roster page with "Full Season" (scoringPeriod 9999) is not a period the panel can show', () => {
+  assert.equal(T.isWholeSeason(T.parseRoute('https://www.fantrax.com/fantasy/league/lg1/team/roster;scoringPeriod=9999')), true);
+  assert.equal(T.isWholeSeason(T.parseRoute('https://www.fantrax.com/fantasy/league/lg1/team/roster;scoringPeriod=3')), false);
+  assert.equal(T.isWholeSeason(T.parseRoute('https://www.fantrax.com/fantasy/league/lg1/team/roster')), false);
+});
+test('latestGate: only the newest of overlapping renders may land (a fast double toggle of return dates)', () => {
+  const gate = T.latestGate(), a = gate.next(), b = gate.next();
+  assert.equal(gate.isLatest(a), false); assert.equal(gate.isLatest(b), true);
 });
 test('weekView.off: IR player listed from his date, cleared player every day, never counted', () => {
   const rows = [prow('Larkin', [game('2026-10-01', 'Thu 7:00PM'), game('2026-10-03', 'Sat 7:00PM')], { injured: true, flag: 'out', returnDate: '2026-10-03', pos: 'C', eligible: ['1', '2', '3'] }),
@@ -882,6 +929,138 @@ test('loadTeam: a schedule call per uncovered day whose lineup names someone the
   await T.loadTeam('abc', { teamId: null, period: 1, day: null }, g, NOW_THU_18);
   assert.deepEqual(g.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').map(c => c.data.period), ['1'], 'same roster: one call as before');
 });
+test('loadTeam: a player in a covered day\'s lineup but missing from the 30-day schedule gets a schedule call from that day', async () => {
+  // live 2026-10-07: Faulk added Wed just after midnight; SCHEDULE_FULL (from Wed) still listed the old roster
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay(n >= 3 ? { S: '1', Faulk: '1' } : { S: '1' });
+  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: { games: { '2026-09-29': 'Tue 4:00PM', '2026-10-02': 'Fri 7:00PM' } } }),
+    'SCHEDULE_PERIOD@3': scheduleFrom('2026-10-01', 7, { S: { games: { '2026-10-02': 'Fri 7:00PM' } }, Faulk: { games: { '2026-10-02': 'Fri 7:00PM', '2026-10-03': 'Sat 6:00PM' } } }) }, stats));
+  const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_PRESEASON);
+  assert.deepEqual(f.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').map(c => c.data.period), ['3']);
+  const faulk = t.groups.skaters.rows.find(r => r.id === 'id-Faulk');
+  assert.deepEqual(faulk.games.map(g => [g.day, g.status]), [['2026-10-02', 'active'], ['2026-10-03', 'active']]);
+  assert.deepEqual(t.groups.skaters.rows.find(r => r.id === 'id-S').games.map(g => g.day), ['2026-09-29', '2026-10-02'], 'no duplicate for a player the 30-day schedule has');
+  const same = {}; for (let n = 1; n <= 6; n++) same['STATS@' + n] = statsDay({ S: '1' });
+  const g = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: {} }) }, same));
+  await T.loadTeam('abc', { teamId: null, period: 1, day: null }, g, NOW_PRESEASON);
+  assert.equal(g.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').length, 0, 'everyone in the 30-day schedule: no extra call');
+});
+// ---- 1.4.0 save speed (2026-10-18) ----
+test('loadTeam: a period that began before today asks its first day\'s 7-day schedule alongside the 30-day one, once', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' });
+  const base = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: { games: { '2026-10-01': 'Thu 7:00PM' } } }),
+    'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: { games: { '2026-09-29': 'Tue 4:00PM' } } }) }, stats));
+  // the 30-day schedule answers only once the 7-day call has been sent: a load that waits for it first never finishes
+  let periodAsked; const asked = new Promise(r => { periodAsked = r; });
+  const f = async (url, init) => {
+    const m = JSON.parse(init.body).msgs[0];
+    if (m.data.view === 'SCHEDULE_PERIOD') periodAsked();
+    if (m.data.view === 'SCHEDULE_FULL') await asked;
+    return base(url, init);
+  };
+  const t = await Promise.race([T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18), new Promise((_, no) => setTimeout(() => no(new Error('the 7-day call waited for the 30-day one')), 500))]);
+  assert.deepEqual(base.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').map(c => c.data.period), ['1'], 'asked once, not again by the chunk loop');
+  assert.deepEqual(t.groups.skaters.rows[0].games.map(g => g.day), ['2026-09-29', '2026-10-01']);
+  const g = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: {} }) }, stats));
+  await T.loadTeam('abc', { teamId: null, period: 1, day: null }, g, NOW_PRESEASON);
+  assert.equal(g.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').length, 0, 'a period not yet begun: no early call');
+});
+test('reuseSchedule: the next load of that team takes the schedule answers from the given team; clearCache ends it', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' });
+  const responses = Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: { games: { '2026-10-01': 'Thu 7:00PM' } } }),
+    'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: { games: { '2026-09-29': 'Tue 4:00PM' } } }) }, stats);
+  const first = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, fakeFetch(responses), NOW_THU_18);
+  T.clearCache(); T.reuseSchedule('abc', first);
+  const f = fakeFetch(responses), again = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, f, NOW_THU_18);
+  assert.deepEqual(f.calls.map(c => c.data.view).filter(v => v.startsWith('SCHEDULE')), [], 'no schedule call');
+  assert.deepEqual(f.calls.map(c => c.data.view).sort(), ['GAMES_PER_POS', 'STATS', 'STATS', 'STATS', 'STATS', 'STATS', 'STATS'], 'lineups and games played are read again');
+  assert.deepEqual(again.groups, first.groups);
+  const other = fakeFetch(responses); await T.loadTeam('abc', { teamId: 'teamB', period: 1, day: null }, other, NOW_THU_18);
+  assert.equal(other.calls.filter(c => c.data.view === 'SCHEDULE_FULL').length, 1, 'another team asks its own');
+  T.clearCache();
+  const g = fakeFetch(responses); await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, g, NOW_THU_18);
+  assert.deepEqual(g.calls.filter(c => c.data.view.startsWith('SCHEDULE')).map(c => c.data.view).sort(), ['SCHEDULE_FULL', 'SCHEDULE_PERIOD']);
+});
+test('clearCache({ keepProfiles: true }) keeps the return-date texts; clearCache() drops them', async () => {
+  T.clearCache();
+  const f = fakeFetch({ 'PROFILE@p1': { sectionContent: { OVERVIEW: { injuryInfo: { injuryMsgs: ['Expected to return on Sat Oct 3'] } } } } });
+  await T.loadReturnTexts('abc', ['p1'], f, 0);
+  T.clearCache({ keepProfiles: true });
+  assert.deepEqual(await T.loadReturnTexts('abc', ['p1'], f, 0), { p1: 'Expected to return on Sat Oct 3' });
+  assert.equal(f.calls.length, 1);
+  T.clearCache(); await T.loadReturnTexts('abc', ['p1'], f, 0);
+  assert.equal(f.calls.length, 2);
+});
+// a fetch that answers `held` views only once every view in `need` has been asked (a load that waits for them first never finishes)
+function gatedFetch(base, need, held) {
+  const seen = new Set(), waiters = [];
+  const f = async (url, init) => {
+    const m = JSON.parse(init.body).msgs[0], key = m.method === 'getPlayerProfile' ? 'PROFILE' : (m.data.period ? m.data.view + '@' + m.data.period : m.data.view);
+    seen.add(key); waiters.splice(0).forEach(w => w());
+    if (held.includes(key)) while (!need.every(k => seen.has(k))) await new Promise(r => waiters.push(r));
+    return base(url, init);
+  };
+  return f;
+}
+const raceLoad = (p, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(what)), 500))]);
+test('reuseSchedule: a lineup that names someone new asks every schedule call again (the roster changed while editing)', async () => {
+  const was = {}, now = {};
+  for (let n = 1; n <= 6; n++) { was['STATS@' + n] = statsDay({ S: '1' }); now['STATS@' + n] = statsDay({ S: '1' }, n >= 2 ? { Hart: '1' } : {}); }
+  const sched = { GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: {} }, { Hart: { games: { '2026-10-03': 'Sat 7:00PM' } } }),
+    'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: {} }), 'SCHEDULE_PERIOD@2': scheduleFrom('2026-09-30', 7, { S: {} }, { Hart: { games: { '2026-09-30': 'Wed 7:00PM' } } }) };
+  const first = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, fakeFetch(Object.assign({}, sched, was, { SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: {} }) })), NOW_THU_18);
+  T.clearCache(); T.reuseSchedule('abc', first);
+  const f = fakeFetch(Object.assign({}, sched, now)), t = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, f, NOW_THU_18);
+  assert.deepEqual(f.calls.filter(c => c.data.view.startsWith('SCHEDULE')).map(c => c.data.view + (c.data.period || '')).sort(), ['SCHEDULE_FULL', 'SCHEDULE_PERIOD1', 'SCHEDULE_PERIOD2']);
+  assert.deepEqual(t.groups.goalies.rows[0].games.map(g => g.day), ['2026-09-30', '2026-10-03'], 'the new goalie\'s games, from the fresh answers');
+  T.clearCache();
+});
+test('reuseSchedule: answers fetched more than SCHEDULE_REUSE_MS ago are asked again', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' });
+  const responses = Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: {} }), 'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: {} }) }, stats);
+  const first = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, fakeFetch(responses), NOW_THU_18);
+  T.clearCache(); T.reuseSchedule('abc', Object.assign({}, first, { scheduleAt: Date.now() - T.SCHEDULE_REUSE_MS - 1 }));
+  const f = fakeFetch(responses), again = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, f, NOW_THU_18);
+  assert.equal(f.calls.filter(c => c.data.view === 'SCHEDULE_FULL').length, 1);
+  assert.ok(Date.now() - again.scheduleAt < 1000, 'the fresh answers carry their own time');
+  T.clearCache(); T.reuseSchedule('abc', first);
+  const reused = await T.loadTeam('abc', { teamId: 'teamA', period: 1, day: null }, fakeFetch(responses), NOW_THU_18);
+  assert.equal(reused.scheduleAt, first.scheduleAt, 'reused answers keep the time they were fetched: two reloads cannot stretch the 10 minutes');
+  T.clearCache();
+});
+test('loadTeam: later 7-day calls for past days go out once those days\' lineups are in, before the 30-day schedule and today\'s lineup', async () => {
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' }, n >= 2 ? { Hart: '1' } : {});
+  const base = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-10-01', 30, { S: {} }, { Hart: { games: { '2026-10-03': 'Sat 7:00PM' } } }),
+    'SCHEDULE_PERIOD@1': scheduleFrom('2026-09-29', 7, { S: { games: { '2026-09-29': 'Tue 4:00PM' } } }),
+    'SCHEDULE_PERIOD@2': scheduleFrom('2026-09-30', 7, { S: {} }, { Hart: { games: { '2026-09-30': 'Wed 7:00PM', '2026-10-03': 'Sat 7:00PM' } } }) }, stats));
+  const f = gatedFetch(base, ['SCHEDULE_PERIOD@2'], ['SCHEDULE_FULL', 'STATS@3']);   // Thu Oct 1 = lineup day 3 = today
+  const t = await raceLoad(T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18), 'the second 7-day call waited for the 30-day schedule');
+  assert.deepEqual(base.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').map(c => c.data.period), ['1', '2'], 'each asked once');
+  assert.deepEqual(t.groups.goalies.rows[0].games.map(g => g.day), ['2026-09-30', '2026-10-03']);
+});
+test('planChunks: the 7-day call days, from the lineups and what the 30-day schedule covers', () => {
+  const days = ['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02'];
+  const byDay = { '2026-09-29': { a: 1 }, '2026-09-30': { a: 1, b: 1 }, '2026-10-01': { a: 1, b: 1 }, '2026-10-02': { a: 1, b: 1, c: 1 } };
+  assert.deepEqual(T.planChunks(days, byDay, new Set(), new Set()), ['2026-09-29', '2026-09-30', '2026-10-02']);
+  assert.deepEqual(T.planChunks(days, byDay, new Set(days.slice(2)), new Set(['a', 'b'])), ['2026-09-29', '2026-09-30', '2026-10-02'], 'a covered day only for someone the 30-day schedule lacks');
+  assert.deepEqual(T.planChunks(days, byDay, new Set(days.slice(2)), new Set(['a', 'b', 'c'])), ['2026-09-29', '2026-09-30']);
+});
+test('loadTeam with profiles: the return dates are asked from the first lineup\'s icons, before the schedule answers', async () => {
+  T.clearCache();
+  const outIcons = [{ typeId: '30', tooltip: 'Out' }], suspIcons = [{ typeId: '6' }], stats = {};
+  for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1', Hurt: { statusId: '1', icons: outIcons }, Susp: { statusId: '1', icons: suspIcons } });
+  const base = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: {}, Hurt: { icons: outIcons }, Susp: { icons: suspIcons } }),
+    'PROFILE@id-Hurt': { sectionContent: { OVERVIEW: { injuryInfo: { injuryMsgs: ['Expected to return on Sat Oct 3'] } } } } }, stats));
+  const f = gatedFetch(base, ['PROFILE'], ['SCHEDULE_FULL']);
+  const t = await raceLoad(T.loadTeam('abc', { teamId: null, period: 1, day: null, profiles: true }, f, NOW_PRESEASON), 'the profiles waited for the schedule');
+  assert.deepEqual(base.calls.filter(c => c.method === 'getPlayerProfile').map(c => c.data.playerId), ['id-Hurt'], 'Out has a date, Suspended none');
+  const dated = await T.withReturnDates('abc', t, base, NOW_PRESEASON, 0);
+  assert.equal(base.calls.filter(c => c.method === 'getPlayerProfile').length, 1, 'withReturnDates reads the early answer');
+  assert.equal(dated.groups.skaters.rows.find(r => r.id === 'id-Hurt').returnDate, '2026-10-03');
+  const g = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: {}, Hurt: { icons: outIcons }, Susp: { icons: suspIcons } }) }, stats));
+  T.clearCache(); await T.loadTeam('abc', { teamId: null, period: 1, day: null }, g, NOW_PRESEASON);
+  assert.equal(g.calls.filter(c => c.method === 'getPlayerProfile').length, 0, 'return dates off: none');
+  T.clearCache();
+});
 test('weekView: a game under way or played counts by that day\'s GP, not by the flag the player has today', () => {
   // Barkov played Tue and is Out today; Sanderson is DTD today and his game is under way; Scratch had GP 0 Tue
   const tue = '2026-09-29', thu = '2026-10-01';
@@ -912,6 +1091,285 @@ test('activeGame / activeTitle: the grid cell of a game under way or played goes
   assert.equal(T.activeTitle(dtd, T.activeGame(dtd, live, '2026-10-01', {})), 'active that day, played');
   assert.deepEqual(T.activeGame(prow('Scratch', []), Object.assign(game('2026-09-29', 'Tue 4:00PM'), { gp: 0 }), '2026-10-01', {}), { counted: false, by: 'gp' });
   assert.equal(T.activeTitle(dtd, T.activeGame(dtd, later, '2026-10-01', {})), 'active that day, but DTD');
+});
+
+// ---- 1.4.0 lineup editing: what editing reads (shapes from the 2026-10-05 spike, made-up names)
+const seasonList = [
+  { code: 'PROJECTION_0', name: 'Projections', shortName: 'Proj' },
+  { code: 'SEASON_31n_YEAR_TO_DATE', name: '2026-27 Regular Season - Year to Date', shortName: '2026-27 Reg - YTD' },
+  { code: 'SEASON_31n_BY_PERIOD', name: '2026-27 Reg - By Period', shortName: '2026-27 Reg - Period' },
+  { code: 'SEASON_31l_YEAR_TO_DATE', name: '2025-26 Regular Season - Year to Date', shortName: '2025-26 Reg - YTD' },
+  { code: 'SEASON_31k_YEAR_TO_DATE', name: '2024-25 Regular Season - Year to Date', shortName: '2024-25 Reg - YTD' },
+];
+const statsHeader = ['Rk', 'FPts', 'FP/G', 'GP'].map(s => ({ shortName: s }));
+const statsRow = (id, fpts, fpg, gp) => ({ scorer: { scorerId: id }, cells: [{ content: '1' }, { content: fpts }, { content: fpg }, { content: gp }] });
+function editResp(over = {}) {
+  return Object.assign({
+    displayedLists: { seasonOrProjections: seasonList, periodList: ['7 (Mon Oct 5)', '8 (Tue Oct 6)'] },
+    displayedSelections: { displayedFantasyTeamId: 'tMine', displayedSeasonOrProjection: { code: 'SEASON_31n_YEAR_TO_DATE' } },
+    myTeamIds: ['tMine', 'tOther'],
+    miscData: { applyToFuturePeriods: true, statusTotals: [{ id: '1', name: 'Active', max: 10, total: 9 }, { id: '2', name: 'Reserve', max: 6, total: 3 }, { id: '3', name: 'Inj Res', max: 4, total: 1 }] },
+    tables: [{ header: { cells: statsHeader }, rows: [statsRow('s1', '35.0', '3.50', '10'), statsRow('s2', '4.0', '-', '0'), { cells: [], statusId: 'y' }] }],
+  }, over);
+}
+test('parseSeasonStats: GP and FP/G per scorer; a response without the columns → {}', () => {
+  assert.deepEqual(T.parseSeasonStats(editResp()), { s1: { gp: 10, fpg: 3.5 }, s2: { gp: 0, fpg: null } });
+  assert.deepEqual(T.parseSeasonStats({ tables: [{ header: { cells: [{ shortName: 'FPts' }] }, rows: [{ scorer: { scorerId: 's1' }, cells: [{ content: '4' }] }] }] }), {});
+  assert.deepEqual(T.parseSeasonStats({}), {});
+});
+test('parseRosterLimits: the recorded field, and {total:null, ir:null} when absent', () => {
+  assert.deepEqual(T.parseRosterLimits(editResp()), { total: 16, ir: 4, irCountsTowardTotal: false });
+  assert.deepEqual(T.parseRosterLimits({}), { total: null, ir: null, irCountsTowardTotal: false });
+  assert.deepEqual(T.parseRosterLimits({ miscData: { statusTotals: [{ id: '1', name: 'Active', max: 21 }] } }), { total: null, ir: null, irCountsTowardTotal: false });
+});
+test('ownTeamId / isOwnTeam / isDailyLineups read the recorded fields', () => {
+  assert.equal(T.ownTeamId(editResp()), 'tMine'); assert.equal(T.isOwnTeam(editResp()), true);
+  const other = editResp({ displayedSelections: { displayedFantasyTeamId: 'tRival' } });
+  assert.equal(T.ownTeamId(other), null); assert.equal(T.isOwnTeam(other), false);
+  assert.equal(T.isOwnTeam(editResp({ myTeamIds: undefined })), false);
+  assert.equal(T.isDailyLineups(editResp()), true);
+  const weekly = editResp({ displayedLists: { periodList: ['7 (Oct 5 - Oct 11)'] } });
+  assert.equal(T.isDailyLineups(weekly), false);
+  assert.equal(T.isDailyLineups(editResp({ displayedLists: {} })), false);
+  assert.equal(T.isDailyLineups(editResp({ displayedLists: { periodList: [] } })), false);
+});
+// A fetch that answers STATS by the seasonOrProjection it was asked for (the shared fakeFetch keys by view only).
+function editFetch(a, b) {
+  const calls = [];
+  const f = async (url, init) => {
+    const body = JSON.parse(init.body);
+    for (const m of body.msgs) calls.push(m.data);
+    return { ok: true, json: async () => ({ responses: body.msgs.map(m => ({ data: m.data.seasonOrProjection ? b : a })) }) };
+  };
+  f.calls = calls; return f;
+}
+test('loadEditExtras: one STATS call for this season (YEAR_TO_DATE, not the period Fantrax shows by default); fpg, limits, flags', async () => {
+  T.clearCache();
+  const f = editFetch(editResp(), null);
+  const x = await T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, f, 0);
+  assert.equal(f.calls.length, 1);
+  assert.deepEqual(f.calls[0], { leagueId: 'abc', view: 'STATS', teamId: 'tMine', timeframeTypeCode: 'YEAR_TO_DATE' });
+  assert.deepEqual(x, { fpg: { s1: { gp: 10, fpg: 3.5 }, s2: { gp: 0, fpg: null } }, limits: { total: 16, ir: 4, irCountsTowardTotal: false },
+    ownTeam: true, daily: true, applyToFuture: true });
+});
+test('loadEditExtras: cached per league+team until clearCache; failure rejects and is not cached', async () => {
+  T.clearCache();
+  const f = editFetch(editResp(), null);
+  await T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, f, 0);
+  assert.equal(f.calls.length, 1);
+  await T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, f, 0);
+  assert.equal(f.calls.length, 1, 'cached');
+  await T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tOther' }, f, 0);
+  assert.equal(f.calls.length, 2, 'per team');
+  T.clearCache();
+  await T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, f, 0);
+  assert.equal(f.calls.length, 3, 'clearCache forgets');
+  T.clearCache();
+  let n = 0; const bad = async () => { n++; return { ok: false, status: 502 }; };
+  await assert.rejects(T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, bad, 0));
+  await assert.rejects(T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, bad, 0));
+  assert.equal(n, 4, 'two tries each, nothing cached');
+});
+test('loadEditExtras: other team, weekly league and missing fields fall back (applyToFuture from the loaded lineups)', async () => {
+  T.clearCache();
+  const bare = { tables: [], displayedLists: { periodList: ['Week 1'] }, displayedSelections: { displayedFantasyTeamId: 'tRival' }, myTeamIds: ['tMine'] };
+  const team = { lineups: { '2026-10-05': { misc: { applyToFuturePeriods: null } }, '2026-10-06': { misc: { applyToFuturePeriods: true } } } };
+  const x = await T.loadEditExtras('abc', team, { teamId: 'tRival' }, editFetch(bare, bare), 0);
+  assert.deepEqual(x, { fpg: {}, limits: { total: null, ir: null, irCountsTowardTotal: false }, ownTeam: false, daily: false, applyToFuture: true });
+});
+
+// ---- 1.4.0 Task 9: the write wrapper (dry run → interpret → execute once → re-read). Response shapes from the 2026-10-05 spike.
+const W_DRY_OK = { fantasyResponse: { msgType: 'CONFIRM', mainMsg: 'Your changes will take effect in Period 8 (Oct 6, 2026). Please confirm…', lineupChanges: [{ scorerId: 'p1', text: 'Reserve to <b>Active</b>' }], illegalRosterMsgs: [], showConfirmWindow: true } };
+const W_NONE = { fantasyResponse: { msgType: 'WARNING', mainMsg: 'There were no changes detected. …', lineupChanges: [], removeSubmitButton: true } };
+const W_LOCKED = { fantasyResponse: { msgType: 'WARNING', mainMsg: 'You cannot make those changes because the following players are already locked in this period:<b>Zed Alpha</b> F - XXX', lineupChanges: [] } };
+const W_ILLEGAL = { fantasyResponse: { msgType: 'WARNING', mainMsg: 'Your changes will take effect in Period 8 (Oct 6, 2026).', lineupChanges: [{ scorerId: 'p1', text: 'Reserve to Active' }], illegalRosterMsgs: ['The maximum number of <b>5</b> active <b>F</b> position(s) will be exceeded.'] } };
+const W_SORRY = { fantasyResponse: { msgType: 'CONFIRM', mainMsg: 'Sorry, you cannot perform that action right now. Zed Alpha is not eligible to play at the position Defense', lineupChanges: [] } };
+const W_EXEC = { fantasyResponse: { msgType: 'CONFIRM', mainMsg: '', lineupChanges: [], showConfirmWindow: false, removeSubmitButton: false, resourceMap: {} }, textArray: [], commissioner: false };
+const W_FM = { p1: { posId: '207', stId: '1' }, p2: { posId: '206', stId: '2' }, p3: { posId: '202', stId: '3' } };
+// a STATS response for one lineup day, rows in the real shape (fm: {scorerId: {posId, stId}})
+const wDay = (fm, extra = []) => ({ tables: [{ scGroup: '2010', header: { cells: [] }, rows: Object.entries(fm).map(([id, e]) => ({ posId: e.posId, statusId: e.stId, eligibleStatusIds: ['1', '2'], eligiblePosIds: ['207'], scorer: { scorerId: id, name: id, posIds: ['207'], defaultPosId: '207' } })).concat(extra) }], miscData: {} });
+// script: {dry: data | Error, exec: data | Error, read: data | Error | [data, …] (one per read try)}; every call is recorded
+function writeFetch(script) {
+  const calls = [], reads = [].concat(script.read);
+  const f = async (url, init) => {
+    const body = JSON.parse(init.body), m = body.msgs[0];
+    calls.push({ url, method: m.method, data: m.data });
+    const v = m.method === 'getTeamRosterInfo' ? (reads.length > 1 ? reads.shift() : reads[0]) : m.data.confirm ? script.dry : script.exec;
+    if (v instanceof Error) throw v;
+    return { ok: true, json: async () => ({ responses: [{ data: v }] }) };
+  };
+  f.calls = calls;
+  f.dry = () => calls.filter(c => c.method === 'confirmOrExecuteTeamRosterChanges' && c.data.confirm === true);
+  f.exec = () => calls.filter(c => c.method === 'confirmOrExecuteTeamRosterChanges' && !('confirm' in c.data));
+  f.reads = () => calls.filter(c => c.method === 'getTeamRosterInfo');
+  return f;
+}
+const W_REQ = { di: 2, n: 8, fieldMap: W_FM, applyToFuturePeriods: false };
+const W_LEGAL = { countLegal: true, otherDayIllegal: false };
+function assertPayloads(f, req = W_REQ) {
+  for (const c of f.dry()) assert.deepEqual(c.data, { rosterLimitPeriod: String(req.n), fantasyTeamId: 'tMine', fieldMap: req.fieldMap, applyToFuturePeriods: req.applyToFuturePeriods, confirm: true });
+  for (const c of f.exec()) assert.deepEqual(c.data, { rosterLimitPeriod: String(req.n), fantasyTeamId: 'tMine', fieldMap: req.fieldMap, applyToFuturePeriods: req.applyToFuturePeriods });
+  for (const c of f.calls) assert.equal(c.url, '/fxpa/req?leagueId=lg1');
+  for (const c of f.reads()) assert.deepEqual(c.data, { leagueId: 'lg1', view: 'STATS', period: String(req.n), teamId: 'tMine' });
+  assert.ok(f.calls.every(c => ['confirmOrExecuteTeamRosterChanges', 'getTeamRosterInfo'].includes(c.method)), 'no other write');
+  assert.ok(f.exec().length <= 1, 'at most one execute per day');
+}
+
+test('lineupMsg: the exact payload, confirm only on a dry run, no daily/adminMode', () => {
+  assert.deepEqual(T.lineupMsg('lg1', 'tMine', 8, W_FM, false, true), { method: 'confirmOrExecuteTeamRosterChanges', data: { rosterLimitPeriod: '8', fantasyTeamId: 'tMine', fieldMap: W_FM, applyToFuturePeriods: false, confirm: true } });
+  assert.deepEqual(T.lineupMsg('lg1', 'tMine', 8, W_FM, true, false), { method: 'confirmOrExecuteTeamRosterChanges', data: { rosterLimitPeriod: '8', fantasyTeamId: 'tMine', fieldMap: W_FM, applyToFuturePeriods: true } });
+  assert.deepEqual(Object.keys(T.lineupMsg('lg1', 'tMine', 8, W_FM, false, false).data).sort(), ['applyToFuturePeriods', 'fantasyTeamId', 'fieldMap', 'rosterLimitPeriod']);
+});
+test('interpretResponse: the spike\'s real responses → ok / none / locked / illegal / error, HTML stripped', () => {
+  const r = T.interpretResponse(W_DRY_OK, { dryRun: true });
+  assert.equal(r.kind, 'ok'); assert.deepEqual(r.changes, [{ scorerId: 'p1', text: 'Reserve to Active' }]); assert.deepEqual(r.illegal, []);
+  assert.equal(T.interpretResponse(W_NONE, { dryRun: true }).kind, 'none');
+  const l = T.interpretResponse(W_LOCKED, { dryRun: true });
+  assert.equal(l.kind, 'locked'); assert.equal(l.mainMsg, 'You cannot make those changes because the following players are already locked in this period:Zed Alpha F - XXX');
+  const i = T.interpretResponse(W_ILLEGAL, { dryRun: true });
+  assert.equal(i.kind, 'illegal'); assert.deepEqual(i.illegal, ['The maximum number of 5 active F position(s) will be exceeded.']);
+  assert.equal(T.interpretResponse(W_SORRY, { dryRun: true }).kind, 'error');
+  assert.equal(T.interpretResponse({ fantasyResponse: { msgType: 'WARNING', mainMsg: 'Something else', lineupChanges: [{ scorerId: 'p1', text: 'x' }] } }, { dryRun: true }).kind, 'error');
+  assert.equal(T.interpretResponse({ fantasyResponse: { msgType: 'CONFIRM', mainMsg: 'Please confirm', lineupChanges: [] } }, { dryRun: true }).kind, 'error', 'a dry run with no changes');
+  assert.equal(T.interpretResponse({ textArray: [] }).kind, 'error'); assert.equal(T.interpretResponse(null).kind, 'error');
+  assert.equal(T.interpretResponse(W_EXEC).kind, 'ok', 'an execute: CONFIRM, empty mainMsg, no changes');
+});
+test('fieldMapFromLineup: non-secondary rows of a parsed day, the same as fieldMapOf on the base', () => {
+  const { team, extras, now, opts } = mkLineupTeam(LINEUP_MOCK), M = T.buildEditModel(team, extras, now, opts);
+  for (const di of [0, 3, 6]) assert.deepEqual(T.fieldMapFromLineup(team.lineups[M.days[di].day]), T.fieldMapOf(M, di, M.days[di].base));
+  const sec = { posId: '207', statusId: '1', secondary: true, scorer: { scorerId: 'pX', name: 'pX' } };
+  assert.deepEqual(T.fieldMapFromLineup(T.parseDayLineup(wDay(W_FM, [sec]))), W_FM);
+});
+test('saveDay: clean dry run → one execute → matching re-read → saved', async () => {
+  const f = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.equal(r.di, 2); assert.equal(r.status, 'saved'); assert.equal(r.banner, undefined);
+  assert.deepEqual(f.calls.map(c => c.method + (c.data.confirm ? ':dry' : '')), ['confirmOrExecuteTeamRosterChanges:dry', 'confirmOrExecuteTeamRosterChanges', 'getTeamRosterInfo']);
+  assertPayloads(f);
+});
+test('saveDay: Fantrax keeps its own posId on reserve / IR rows (live 2026-10-05) and the save still reads back as saved', async () => {
+  const stored = { p1: { posId: '207', stId: '1' }, p2: { posId: '207', stId: '2' }, p3: { posId: '207', stId: '3' } };   // sent 206 / 202
+  const f = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: wDay(stored) });
+  assert.equal((await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f)).status, 'saved');
+  const g = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: wDay(Object.assign({}, W_FM, { p1: { posId: '206', stId: '1' } })) });   // an active slot differs
+  assert.equal((await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, g, 0)).status, 'failed');
+  const h = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: wDay(Object.assign({}, W_FM, { p2: { posId: '206', stId: '3' } })) });   // reserve vs IR differs
+  assert.equal((await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, h, 0)).status, 'failed');
+});
+test('saveDay: Fantrax already has this lineup → saved, no execute', async () => {
+  const f = writeFetch({ dry: W_NONE, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.deepEqual([r.status, r.messages], ['saved', ['Fantrax already has this lineup']]);
+  assert.equal(f.exec().length, 0); assertPayloads(f);
+});
+test('saveDay: locked → held with Fantrax\'s words, no execute', async () => {
+  const f = writeFetch({ dry: W_LOCKED, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.equal(r.status, 'held'); assert.deepEqual(r.messages, ['You cannot make those changes because the following players are already locked in this period:Zed Alpha F - XXX']);
+  assert.equal(f.exec().length, 0); assert.equal(f.calls.length, 1); assertPayloads(f);
+});
+test('saveDay: a "Sorry" dry run or a dry run that cannot be sent → held, no execute', async () => {
+  const f = writeFetch({ dry: W_SORRY, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.equal(r.status, 'held'); assert.match(r.messages[0], /^Sorry, you cannot perform that action/);
+  assert.equal(f.exec().length, 0); assertPayloads(f);
+  const g = writeFetch({ dry: new TypeError('Failed to fetch'), exec: W_EXEC, read: wDay(W_FM) });
+  const s = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, g);
+  assert.equal(s.status, 'held'); assert.match(s.messages[0], /Failed to fetch/);
+  assert.equal(g.dry().length, 1, 'a dry run is not retried either'); assert.equal(g.exec().length, 0);
+});
+test('saveDay (strict, user 2026-10-18): illegal per Fantrax → held, even when our count says legal and another day is already illegal', async () => {
+  const f = writeFetch({ dry: W_ILLEGAL, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, { countLegal: true, otherDayIllegal: true }, f);
+  assert.equal(r.status, 'held'); assert.deepEqual(r.messages, ['The maximum number of 5 active F position(s) will be exceeded.', "Fantrax says the roster is illegal; if that is another day's lineup, fix it on Fantrax, then save again."]);
+  assert.equal(f.exec().length, 0, 'never executed'); assert.equal(f.calls.length, 1); assertPayloads(f);
+});
+test('saveDay: illegal and no other day is illegal → held', async () => {
+  const f = writeFetch({ dry: W_ILLEGAL, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, { countLegal: true, otherDayIllegal: false }, f);
+  assert.equal(r.status, 'held'); assert.deepEqual(r.messages, ['The maximum number of 5 active F position(s) will be exceeded.', "Fantrax says the roster is illegal; if that is another day's lineup, fix it on Fantrax, then save again."]);
+  assert.equal(f.exec().length, 0); assert.equal(f.calls.length, 1); assertPayloads(f);
+});
+test('saveDay with limits null holds a day the dry run calls illegal', async () => {
+  const f = writeFetch({ dry: W_ILLEGAL, exec: W_EXEC, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, { countLegal: false, otherDayIllegal: true }, f);
+  assert.equal(r.status, 'held'); assert.equal(f.exec().length, 0); assertPayloads(f);
+});
+test('saveDay: execute timeout then a matching re-read reports saved, one execute only', async () => {
+  const abort = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+  const f = writeFetch({ dry: W_DRY_OK, exec: abort, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.equal(r.status, 'saved'); assert.equal(f.exec().length, 1); assert.equal(f.reads().length, 1); assertPayloads(f);
+});
+test('saveDay: execute answered with an error still goes to the re-read; one execute only', async () => {
+  const f = writeFetch({ dry: W_DRY_OK, exec: { fantasyResponse: { msgType: 'WARNING', mainMsg: 'Something went wrong' } }, read: wDay(W_FM) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.equal(r.status, 'saved'); assert.equal(f.exec().length, 1); assert.equal(f.reads().length, 1);
+  const g = writeFetch({ dry: W_DRY_OK, exec: { fantasyResponse: { msgType: 'WARNING', mainMsg: 'Something went wrong' } }, read: wDay({ p1: { posId: '207', stId: '2' }, p2: W_FM.p2, p3: W_FM.p3 }) });
+  const s = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, g);
+  assert.equal(s.status, 'failed'); assert.equal(s.messages[0], 'Fantrax did not keep this lineup'); assert.ok(s.messages.includes('Something went wrong'));
+  assert.equal(g.exec().length, 1); assertPayloads(g);
+});
+test('saveDay: re-read differs → failed', async () => {
+  const f = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: wDay({ p1: { posId: '207', stId: '2' }, p2: W_FM.p2, p3: W_FM.p3 }) });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f);
+  assert.equal(r.status, 'failed'); assert.deepEqual(r.messages, ['Fantrax did not keep this lineup']);
+  assert.equal(f.exec().length, 1); assertPayloads(f);
+});
+test('saveDay: the re-read is retried once (a read); it failing twice → failed "Could not check the save", still one execute', async () => {
+  const f = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: [new TypeError('Failed to fetch'), wDay(W_FM)] });
+  assert.equal((await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, f, 0)).status, 'saved');
+  assert.equal(f.reads().length, 2); assert.equal(f.exec().length, 1);
+  const g = writeFetch({ dry: W_DRY_OK, exec: W_EXEC, read: new TypeError('Failed to fetch') });
+  const r = await T.saveDay('lg1', 'tMine', W_REQ, W_LEGAL, g, 0);
+  assert.deepEqual([r.status, r.messages], ['failed', ['Could not check the save: Failed to fetch']]);
+  assert.equal(g.reads().length, 2); assert.equal(g.exec().length, 1); assertPayloads(g);
+});
+test('saveAll: a failed day does not stop the next; results in date order', async () => {
+  const fm = n => ({ p1: { posId: '207', stId: n === 9 ? '2' : '1' }, p2: W_FM.p2 });
+  const reqs = [{ di: 1, n: 7, fieldMap: fm(7), applyToFuturePeriods: false }, { di: 2, n: 8, fieldMap: fm(8), applyToFuturePeriods: false }, { di: 3, n: 9, fieldMap: fm(9), applyToFuturePeriods: true }];
+  const calls = [];
+  const f = async (url, init) => {
+    const m = JSON.parse(init.body).msgs[0]; calls.push(m);
+    const n = Number(m.data.rosterLimitPeriod || m.data.period);
+    let v;
+    if (m.method === 'getTeamRosterInfo') v = wDay(n === 8 ? { p1: { posId: '207', stId: '3' }, p2: W_FM.p2 } : fm(n));   // day 8 not kept
+    else v = m.data.confirm ? (n === 7 ? W_LOCKED : W_DRY_OK) : W_EXEC;
+    return { ok: true, json: async () => ({ responses: [{ data: v }] }) };
+  };
+  const out = await T.saveAll('lg1', 'tMine', reqs, { 1: W_LEGAL, 2: W_LEGAL, 3: W_LEGAL }, f);
+  assert.deepEqual(out.map(r => [r.di, r.status]), [[1, 'held'], [2, 'failed'], [3, 'saved']]);
+  const execs = calls.filter(m => m.method === 'confirmOrExecuteTeamRosterChanges' && !m.data.confirm);
+  assert.deepEqual(execs.map(m => [m.data.rosterLimitPeriod, m.data.applyToFuturePeriods]), [['8', false], ['9', true]], 'one execute per day, in date order, the last day last');
+  const order = calls.map(m => m.data.rosterLimitPeriod || m.data.period);
+  assert.deepEqual(order, ['7', '8', '8', '9', '9', '8', '9'], 'dry run and execute one day at a time; the re-reads of executed days after the last execute');
+});
+test('saveAll: the re-reads run together after the last execute', async () => {
+  const p1 = { posId: '207', stId: '1' };
+  const reqs = [7, 8, 9].map((n, i) => ({ di: i, n, fieldMap: { p1, p2: W_FM.p2 }, applyToFuturePeriods: false }));
+  let open = 0, most = 0, release; const gate = new Promise(r => { release = r; });
+  const f = async (url, init) => {
+    const m = JSON.parse(init.body).msgs[0];
+    if (m.method !== 'getTeamRosterInfo') return { ok: true, json: async () => ({ responses: [{ data: m.data.confirm ? W_DRY_OK : W_EXEC }] }) };
+    open++; most = Math.max(most, open); if (open === 3) release();
+    await Promise.race([gate, new Promise(r => setTimeout(r, 200))]); open--;
+    return { ok: true, json: async () => ({ responses: [{ data: wDay({ p1, p2: W_FM.p2 }) }] }) };
+  };
+  const out = await T.saveAll('lg1', 'tMine', reqs, { 0: W_LEGAL, 1: W_LEGAL, 2: W_LEGAL }, f);
+  assert.deepEqual(out.map(r => [r.di, r.status]), [[0, 'saved'], [1, 'saved'], [2, 'saved']]);
+  assert.equal(most, 3, 'three re-reads in flight at once');
+});
+test('interpretResponse / saveDay: a dry run that refuses or lists no changes is error even with illegalRosterMsgs — never executed', async () => {
+  const ill = ['The maximum number of <b>5</b> active <b>F</b> position(s) will be exceeded.'];
+  const sorryIll = { fantasyResponse: { msgType: 'WARNING', mainMsg: 'Sorry, you cannot perform that action right now.', lineupChanges: [{ scorerId: 'p1', text: 'x' }], illegalRosterMsgs: ill } };
+  const emptyIll = { fantasyResponse: { msgType: 'WARNING', mainMsg: 'Your changes will take effect in Period 8.', lineupChanges: [], illegalRosterMsgs: ill } };
+  assert.equal(T.interpretResponse(sorryIll, { dryRun: true }).kind, 'error');
+  assert.equal(T.interpretResponse(emptyIll, { dryRun: true }).kind, 'error');
+  for (const dry of [sorryIll, emptyIll]) {
+    const f = writeFetch({ dry, exec: W_EXEC, read: wDay(W_FM) });
+    const r = await T.saveDay('lg1', 'tMine', W_REQ, { countLegal: true, otherDayIllegal: true }, f);
+    assert.equal(r.status, 'held'); assert.equal(f.exec().length, 0); assertPayloads(f);
+  }
 });
 
 // 1.3.8: Fantrax reuses the roster table body across views, so leaving Schedule - Week for Trends/Stats left the two

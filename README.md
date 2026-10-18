@@ -4,56 +4,56 @@ Tampermonkey userscripts for fantasy hockey.
 
 ## Fantrax Game Tracker (`fantrax-game-tracker.user.js`)
 
-Shows games played against the league's games-played cap, skaters and goalies separately, on two Fantrax pages:
+Keeps track of your league's weekly games-played limit (skaters and goalies separately), so you don't waste games by
+going over it or leave games unused, and lets you set your lineup for the whole week from one panel.
 
-- **Matchups** (`/livescoring`): a small table under each team's header — Played, Max, Left (Max − Played),
-  Sched (games the active lineup still has this period, using each day's own lineup since Fantrax lineups are daily),
-  Potential (Sched plus games players on reserve that day could add), and a verdict: red "over by N" (bench someone
-  or lose the games), amber "N unused, bench covers all N" or "bench covers M" (activate reserve players on the right
-  days), green "on track" / "N unused" (nothing on the bench to fill it).
-- **Team Roster** (`/team/roster`): the same table under the page title on every tab (for the scoring period that
-  contains the day shown in the Period picker), and on **Schedule - Week** two footer rows per group: active games per
-  day and a running total against the max, with the day you would cross the cap in red. Saving a lineup change
-  refreshes the numbers.
-- **Week panel** (Team Roster, every tab, since 1.2.0): one column per day of the scoring period listing every lineup
-  slot with that day's real lineup (Fantrax lineups are daily, and its Schedule - Week grid draws every day with the
-  displayed day's slots). A slot shows the player, opponent and start time; **empty** when its player has no game that
-  day (his name in grey); **open slot** when nobody is in it (a move to reserves carries forward to later days); an
-  **OUT / IR / SUSP** tag, struck through, when Fantrax lists him as out (not counted); a **DTD / MINORS** note when he
-  is day-to-day or assigned to the minors (still counted; hover the tag for Fantrax's wording).
-  Under the goalie slots, "Bench, has a game" lists reserve players who play that day, the swaps worth making. Days
-  already played are dimmed, today is marked. The "Week" link collapses the panel and remembers your choice.
-- **Schedule - Week cells** (since 1.2.0) are recoloured by each day's lineup: green tint = in the active lineup that
-  day, red and struck through = active but out; a day on reserve is left as Fantrax draws it (since 1.3.2), so the
-  opponent stays readable. Hover a cell for the wording.
-- **Expected return dates** (since 1.3.0, off by default): tick "Count players from their Fantrax expected return
-  date" (under the roster strip, or above the two teams on Matchups) and a player tagged Out, IR or Day-to-day is
-  counted for games on or after the date Fantrax shows in his injury report, and not before it; suspended players and
-  players with no date keep the default rule. The Sched and Potential numbers that changed turn violet, and lines under
-  the table say who moved them and why; in the Week panel a `RET` tag marks the days a player is counted because of
-  his date. The dates are Fantrax's estimates and are often placeholders, so treat this as a second opinion, not a
-  fact. One extra read-only request per flagged player, cached ten minutes.
-- **Players on IR** (since 1.3.1): a player in an IR slot who is expected back this period gets his own blue line under
-  the table ("On IR, back this period: Larkin Fri 10/2, 2 games, not counted") naming the players Fantrax says could
-  take his IR spot without losing any counted games, or saying that activating him needs a drop; the Week panel lists
-  him under "Inj Res, expected back" from his date. A player still in an IR slot whom Fantrax no longer allows there
-  (his roster is illegal until he moves) gets a line too. None of this changes any number: IR games are never counted, because activating a player costs a
-  roster move.
+- **Matchups:** a small table under each team's header: games **Played**, the **Max**, games **Left**, games your
+  lineup is set to play (**Sched**), and what reserve players could add (**Potential**). A verdict says what to do:
+  red "over by N" (bench someone or lose the games), amber "N unused, bench covers…" (start reserve players on the
+  right days), green "on track".
+- **Team Roster:** the same table under the page title, on every tab. On **Schedule - Week**, two rows under each
+  group show active games per day and the running total, with the day you would go over in red. Each cell is tinted
+  green when that player is in your lineup that day, and red and struck through when he is active but out.
+- **Week panel** (Team Roster): the whole scoring period at a glance, as **Columns** (one per day) or a **Grid** (one
+  row per player). Each slot shows the player, opponent and start time, **empty** when he has no game, **open** when
+  nobody is in it, and tags for **OUT / IR / SUSP** (not counted) and **DTD / MINORS** (still counted). Games that go
+  past the max are marked **over**. A meter at the top shows played + scheduled against the max. Click a day's ↗ to
+  open that day on Fantrax. The **Week** link collapses the panel.
+- **Players on IR:** a player in an IR slot who is due back this period gets a line under the table saying who could
+  take his IR spot, or that bringing him back needs a drop.
+- **Expected return dates** (off by default): tick "Count players from their Fantrax expected return date" to count an
+  injured player from the date in his Fantrax injury report. Numbers that change turn violet, with a line saying why,
+  and a `RET` tag marks those days in the Week panel. Fantrax's dates are often placeholders, so treat this as a
+  second opinion.
 
-Played and Max come from Fantrax's own Min/Max view, so they match what Fantrax enforces. Players on IR, tagged
-Out or suspended never count; day-to-day players do. A game that has started today no longer counts as scheduled (whether Fantrax
-adds it to Played before the final horn is a first-week check; if a started game's schedule cell loses its start time,
-it will look scheduled until that is confirmed). Numbers refresh every five
-minutes (one games-played call, one schedule call and one lineup call per day of the period, all read-only), whenever you change period, team or page, when you save a lineup, and when you come back to the tab.
+Players on IR, Out or suspended never count; day-to-day players do. The numbers refresh every five minutes, and when
+you change period, team or page, save a lineup, or come back to the tab.
 
-The script assumes a hockey league (skaters and goalies as the two games groups) and reads everything else — periods,
-caps, lineups, roster statuses and IR eligibility — from Fantrax's responses for the league on screen.
+### Setting your lineup from the Week panel
 
-Install: Tampermonkey → open the raw file → Install. Updates arrive automatically. The script only runs on
-`www.fantrax.com/fantasy/league/*` (never the draft room), calls only Fantrax's read-only roster endpoints, and needs
-no permissions (`@grant none`). To limit it to the two pages, replace the `@match` line with
-`@match https://www.fantrax.com/fantasy/league/*/livescoring*` and `@match https://www.fantrax.com/fantasy/league/*/team/roster*`
-(you then need to load or refresh the page on one of those URLs, because Fantrax navigates without page loads).
+On your own team (in a league with daily lineups), the Week panel is editable as soon as it loads. Nothing reaches
+Fantrax until you press **Save**.
+
+- **Move players:** click a player or open slot (Columns) or a cell (Grid) to start or sit him for that day. If someone
+  has to sit to make room, the cells you can choose light up; click one, or **Cancel**. `⋯` lists every move for that
+  player and day, and the IR chips move players in and out of IR.
+- **Fill:** `start +N` starts a player in every remaining game he can play (`✓ all` means he already does).
+  `Fill <N>` in a day header, or **Fill every day**, fills open slots with the best players by their Fantrax FP/G this
+  season (shown under each name), never going past the games max.
+- **Save:** your moves are kept if you refresh the page, and auto-refresh pauses until you save. **↶ Undo** and
+  **Discard** take moves back. **Save <N> days** saves each changed day and then checks Fantrax to confirm it. Each
+  day comes back saved, held (with Fantrax's reason) or failed, and anything not saved stays pending. The "Keep
+  <Sun>'s lineup for later days" box carries the last day forward. Messages close with ×; most also fade on their own.
+- **Safe by design:** the script never adds, drops, claims or trades players. A day is only saved if its lineup is
+  legal (everyone in a slot he can play, IR and roster limits respected) and Fantrax agrees. If Fantrax says your roster
+  is illegal, even because of another day, nothing is saved until you fix it on Fantrax. Moves for games that have
+  already started are skipped. Warnings (going past the games max, starting an Out player) don't block a save.
+
+Other teams' panels show the same view, read-only.
+
+Install: Tampermonkey → open the [raw file](https://raw.githubusercontent.com/ftalburt/fantasy-hockey-userscripts/master/fantrax-game-tracker.user.js)
+→ Install. Updates arrive automatically. It runs on Fantrax league pages only (never the draft room), needs no special
+permissions, and only writes to Fantrax when you press Save.
 
 Tests: `node --test`.
 
