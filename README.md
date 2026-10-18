@@ -57,6 +57,35 @@ no permissions (`@grant none`). To limit it to the two pages, replace the `@matc
 
 Tests: `node --test`.
 
+## Fantrax Peripherals (`fantrax-peripherals.user.js`)
+
+Shows how much of each skater's fantasy points come from **peripherals** (shots, hits, blocks, faceoffs and whatever
+other non-scoring categories your league uses) rather than goals and assists, so you can spot players who score every
+night without needing to find the net.
+
+- **Players list:** **Peri** (peripheral fantasy points) and **Peri/G** (per game) after FP/G. Click either header to
+  sort the whole player pool by it, just like FP/G; the first sort can take a few seconds.
+- **Player card:** Peri and Peri/G in every table that has FPts or FP/G (Recent Games, Stats, Splits, Games...).
+- **Team Roster:** Peri and Peri/G in the skaters table on the Stats, Fantasy Points, Trends and Schedule tabs, for any
+  team.
+- **Live Scoring / Matchups:** a Peri category, first among the skater stats, in **Fpts** mode (hidden in Stats mode,
+  where every other number is a raw stat count).
+
+On the Players, card and roster pages the order is always FPts | FP/G | Peri | Peri/G. It works in any Fantrax points
+league: the scoring weights come from your league's own rules.
+
+**`–`** means there is no number to show: goalies, Peri/G with no games played, projections, or values still loading
+(they appear when you change page or come back to the tab). **`?`** means the script could not match Fantrax's own
+FPts for that row, so it shows nothing rather than a wrong number; hover it for the reason.
+
+The script only adds these columns; it never removes or changes anything Fantrax shows, it is read-only, and it does not
+make pages load any slower.
+
+Install: Tampermonkey → open the [raw file](https://raw.githubusercontent.com/ftalburt/fantasy-hockey-userscripts/master/fantrax-peripherals.user.js)
+→ Install. Updates arrive automatically.
+
+Tests: `node --test`.
+
 ## ESPN Fantasy Hockey Game Tracker (`fantasy-hockey-game-tracker.user.js`)
 
 The original ESPN version (2015–2026 seasons). Unmaintained now that the league is on Fantrax.
