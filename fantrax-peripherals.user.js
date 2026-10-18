@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Peripherals
 // @namespace    http://ftalburt.com/
-// @version      1.0.0
+// @version      1.0.1
 // @description  Adds Peri / Peri/G (fantasy points from non-points categories) to Fantrax's Players list, player card, Team Roster and Live Scoring
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/*
@@ -89,6 +89,9 @@ function pointsCats(rules) { return Object.keys(rules.skater).filter(isPointsCat
 // ---- per-row Peri with the FPts safety check ----
 
 const FPTS_TOLERANCE = 0.05;
+// The "?" tooltip when Fantrax's own FPts can't be rebuilt from the row's stats (e.g. a season row listing a faceoff
+// that none of the game logs or the FPts count; live 2026-10-17).
+const MISMATCH_NOTE = "Fantrax's FPts doesn't match the stats in this row";
 
 // statsFromCells(headerCells, rowCells): headerCells = data.tableHeader.cells ({shortName, key?, scipId?}; plain
 // shortName strings are also accepted and treated as category columns); rowCells = the row's cells ({content}) or
@@ -167,7 +170,7 @@ function rowPeri(stats, positions, fpts, rules, perGame, tol) {
       return { peri, perG: typeof gp === 'number' && gp > 0 ? peri / gp : null, gp, status: 'ok' };
     }
   }
-  return bad('mismatch', 'FPts does not match the scoring rules');
+  return bad('mismatch', MISMATCH_NOTE);
 }
 
 // Shown FPts text -> half a unit of its last digit (plus float slack), at least FPTS_TOLERANCE. The profile Stats tab
@@ -303,7 +306,7 @@ function augmentStats(data, rules, values) {
     else if (v.status === 'loading') { a = rowCell(row, DASH, LOADING_TIP); b = rowCell(row, DASH, LOADING_TIP); }
     else if (v.status === 'unavailable') { a = rowCell(row, DASH, UNAVAILABLE_TIP); b = rowCell(row, DASH, UNAVAILABLE_TIP); }
     else if (v.status !== 'ok') {
-      const t = 'Peri unavailable: the FPts check failed' + (v.note ? ' (' + v.note + ')' : '');
+      const t = 'Peri unavailable: ' + (v.note || MISMATCH_NOTE);
       a = rowCell(row, '?', t); b = rowCell(row, '?', t);
     } else {
       a = rowCell(row, fmt2(v.peri));
@@ -430,7 +433,7 @@ function augmentProfileTable(t, positions, rules) {
     } else {
       a = b = r.status === 'mismatch' ? '?' : DASH;
     }
-    const why = r.status === 'ok' ? null : 'Peri unavailable: ' + (r.note || 'the FPts check failed');
+    const why = r.status === 'ok' ? null : 'Peri unavailable: ' + (r.note || MISMATCH_NOTE);
     const src = (i) => cells[i] || {};
     return Object.assign({}, row, { cells: splice(cells, fi >= 0 ? plainCell(src(fi), a, why) : null,
       gi >= 0 ? plainCell(src(gi), b, why) : null) });
@@ -540,7 +543,7 @@ function fptsViewPeri(hc, cells, positions, fpts, fpgText, rules) {
   });
   const absent = Object.keys(rules.skater).filter((a) => have[a] === undefined);
   if (absent.length) return bad('missing', 'no column for ' + absent.join(', '));
-  if (Math.abs(sum - fpts) > FPTS_TOLERANCE) return bad('mismatch', 'FPts is not the sum of its category points');
+  if (Math.abs(sum - fpts) > FPTS_TOLERANCE) return bad('mismatch', "Fantrax's FPts isn't the sum of the category points in this row");
   const peri = periCats(rules).reduce((a, c) => a + have[c], 0);
   const gp = gpFromFpg(fpts, fpgText);
   return { peri, perG: gp ? peri / gp : null, gp, status: 'ok' };
@@ -569,7 +572,7 @@ function totalsPeri(stats, fpts, rules) {
     if (periSet.includes(a)) peri += v[0];
   }
   // sanity bound only (not a rebuild of FPts)
-  if (fpts < lo - FPTS_TOLERANCE || fpts > hi + FPTS_TOLERANCE) return bad('mismatch', 'FPts does not match the scoring rules');
+  if (fpts < lo - FPTS_TOLERANCE || fpts > hi + FPTS_TOLERANCE) return bad('mismatch', MISMATCH_NOTE);
   const gp = s.GP;
   return { peri, perG: typeof gp === 'number' && gp > 0 ? peri / gp : null, gp, status: 'ok' };
 }
@@ -674,7 +677,7 @@ function augmentRoster(data, rules, values) {
         else if (r.status === 'ok') { a = fmt2(r.peri); b = r.perG === null ? DASH : fmt2(r.perG); }
         else {
           a = b = r.status === 'mismatch' ? '?' : DASH;
-          why = 'Peri unavailable: ' + (r.note || 'the FPts check failed');
+          why = 'Peri unavailable: ' + (r.note || MISMATCH_NOTE);
         }
       }
       return Object.assign({}, row, { cells: spliceAt(cells, off, fi >= 0 ? plainCell(src(fi), a, why) : null,

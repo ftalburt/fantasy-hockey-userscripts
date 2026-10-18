@@ -1531,7 +1531,7 @@ test('roster Fantasy Points view check: cells that do not add up to FPts give ?,
   assert.equal(v['Bo Horvat'], '? ?');
   assert.equal(v['Jesper Bratt'], '– –');
   const i = a.tables[0].header.cells.findIndex((c) => c.key === 'fh_peri');
-  assert.match(a.tables[0].rows[0].cells[i].toolTip, /FPts is not the sum/);
+  assert.match(a.tables[0].rows[0].cells[i].toolTip, /FPts isn't the sum of the category points in this row/);
 });
 
 test('roster Stats view check: a row whose stats do not rebuild FPts gives ?; the Totals row is checked on its own cells', () => {
@@ -2825,4 +2825,15 @@ test('the sort deadline timer is cleared when the sort is done (real timers)', a
     assert.equal(d.displayedSortType, 'SCORING_CATEGORY');
     assert.equal(live.size, 0);
   } finally { globalThis.setTimeout = real.set; globalThis.clearTimeout = real.clear; }
+});
+
+test('"?" tooltip: a season row whose stats list a faceoff Fantrax\'s FPts does not count (live 2026-10-17)', () => {
+  // 2026-27 card Stats row: Faceoffs "1-0-100%" but no faceoff in any game log; Fantrax FPts 50.75, shown "50.8".
+  const st = { GP: 10, G: 3, A: 0, Pt: 3, '+/-': 3, PIM: 4, SOG: 11, PPG: 0, PPA: 0, SHG: 1, SHA: 0, GWG: 1, OG: 0,
+    Hit: 21, Blk: 16, FOW: 1, FOL: 0 };
+  const r = P.rowPeri(st, ['D'], 50.8, RULES4, false, P.fptsTolerance('50.8'));
+  assert.equal(r.status, 'mismatch');
+  assert.equal(r.note, "Fantrax's FPts doesn't match the stats in this row");
+  const ok = P.rowPeri(Object.assign({}, st, { FOW: 0 }), ['D'], 50.8, RULES4, false, P.fptsTolerance('50.8'));
+  assert.equal(P.fmt2(ok.peri), '28.75'); // without the stray faceoff: the Players list's Peri
 });
