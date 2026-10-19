@@ -403,12 +403,12 @@ test('targetsFor: toir only when IR-eligible and IR has room (null cap = no cap)
 test('planClick: a bench player with an open slot starts there; with only playing occupants → pick; a not-playing occupant goes to reserve', () => {
   const B = M.days[3].base;
   const open = dropAt(B, 7), a = T.planClick(M, 3, open, 'l5');
-  assert.equal(a.k, 'move'); assert.equal(a.L.s[7], 'l5'); assert.equal(a.text, 'Click: starts in LW');
+  assert.equal(a.k, 'move'); assert.equal(a.L.s[7], 'l5'); assert.equal(a.text, 'Click: starts in LW (others shift slots)');   // lock-aware: Varga (6:00 PM) leaves Skt for a later D
   const pick = T.planClick(M, 3, B, 'd10');
   assert.equal(pick.k, 'pick'); assert.ok(pick.opts.length > 0 && pick.opts.every(o => o.s.includes('d10')));
   const idle = T.planClick(M, 3, B, 'l5');   // l3 is Out: not playing, so he sits
   assert.equal(idle.k, 'move'); assert.equal(idle.out, 'l3'); assert.equal(idle.L.s.includes('l3'), false); assert.equal(idle.L.s.includes('l5'), true);
-  assert.match(idle.text, /^Click: starts in LW · Ryan Kask \(not playing\) to reserve$/);
+  assert.match(idle.text, /^Click: starts in LW · Ryan Kask \(not playing\) to reserve \(others shift slots\)$/);   // lock-aware: Varga leaves Skt
   const res = T.planClick(M, 3, B, 'c1');
   assert.deepEqual([res.k, res.text, res.L.s[0]], ['move', 'Click: to reserve (his C slot opens)', null]);
   const shifted = T.planClick(M, 4, dropAt(M.days[4].base, 7), 'c6');   // c6 is C only; every C slot is full: c2 shifts to LW
@@ -1590,14 +1590,14 @@ test('WEEK_CSS: Grid day label on its own line, so "played"/"today" and Fill sit
 });
 
 // ---- 2026-10-18 user: reserve cells with no game read as blank, and clicking one made a move that gains nothing
-test('planClick: a reserve player whose game that day would not count (no game, or out) is not started: k none, ⋯ still moves him', () => {
+test('planClick: a reserve player whose game that day would not count (no game, or out) is not started: k none', () => {
   const lineups = M.days.map(d => d.base), di = 4, L = lineups[di], ledger = T.gameLedger(M, lineups);
   const ids = M.order.filter(id => T.gridCell(M, lineups, di, id, ledger).kind === 'benchNo');
   assert.ok(ids.length, 'fixture has a reserve player with nothing that counts on Fri');
   for (const id of ids) {
     const r = T.planClick(M, di, L, id);
     assert.equal(r.k, 'none', id);
-    assert.match(r.text, /nothing to (start|gain).*⋯/);
+    assert.match(r.text, /nothing to (start|gain)$/);   // 2026-10-18: the Grid's ⋯ menu is gone
   }
   assert.notEqual(T.planClick(M, 3, lineups[3], 'c5').k, 'none');   // a reserve player with a counted game (Thu) still starts
 });
@@ -1666,4 +1666,86 @@ test('WEEK_CSS: the meter is not pinned to the page (it covered the grid\'s own 
   assert.ok(!/\.fgt-meter\{[^}]*position:sticky/.test(css));
   assert.match(css, /\.fgt-c\.fgt-hasirb \.fgt-cell:has\(\.fgt-tag\)\{[^}]*padding-right/);
   assert.match(css, /\.fgt-x\{/);
+});
+
+// ---- 2026-10-18 user: lock-aware seating. Fantrax locks each player at his own puck drop and a locked player keeps his slot, so a
+// Grid start puts the earliest games in the slots later reserve players need least (the flex last); same starters, no points change.
+// Tue (day 1): Erik Dahl (D, 1:00 PM) sits in Skt, the D slot is open; Lars Moe (D, 7:00 PM) and Roy Pitt (RW, 7:30 PM) on reserve.
+const LA_PLAYERS = [
+  { id: 'c1', fpg: 2, gp: 2, n: 'Carl Ames', pos: ['C'], g: { 1: 'BOS 7:00PM' } },
+  { id: 'l1', fpg: 2, gp: 2, n: 'Lou Bray', pos: ['LW'], g: { 1: 'TOR 7:00PM' } },
+  { id: 'dE', fpg: 2, gp: 2, n: 'Erik Dahl', pos: ['D'], g: { 1: 'NYI 1:00PM' } },
+  { id: 'dL', fpg: 3, gp: 2, n: 'Lars Moe', pos: ['D'], g: { 1: 'MTL 7:00PM' } },
+  { id: 'r1', fpg: 1, gp: 2, n: 'Roy Pitt', pos: ['RW'], g: { 1: '@BOS 7:30PM' } },
+  { id: 'g1', fpg: 2, gp: 2, n: 'Gus Hale', pos: ['G'], g: { 1: 'SEA 7:00PM' } },
+];
+const LA = { start: '2026-10-05', days: 2, now: { d: 0, m: 9 * 60 }, slots: ['C', 'LW', 'D', 'Skt', 'G'], base: ['c1', 'l1', null, 'dE', 'g1'],
+  players: LA_PLAYERS, limits: { total: 10, ir: 2 }, max: { skaters: 60, goalies: 10 }, own: true, daily: true };
+const LAM = build(LA);
+test('planClick (lock-aware): the 1:00 PM D takes the D slot and the 7:00 PM D the flex, so the 7:30 PM RW can still get in', () => {
+  const r = T.planClick(LAM, 1, LAM.days[1].base, 'dL');
+  assert.equal(r.k, 'move');
+  assert.deepEqual(r.L.s, ['c1', 'l1', 'dE', 'dL', 'g1']);
+  assert.match(r.text, /others shift slots/);
+});
+test('planClick (lock-aware): nobody on reserve plays later, so nobody else moves', () => {
+  const X = build(Object.assign({}, LA, { players: LA_PLAYERS.map(p => p.id === 'r1' ? Object.assign({}, p, { g: {} }) : p) }));
+  assert.deepEqual(T.planClick(X, 1, X.days[1].base, 'dL').L.s, ['c1', 'l1', 'dL', 'dE', 'g1']);
+});
+test('planClick (lock-aware): a player whose game started keeps his slot', () => {
+  const X = build(Object.assign({}, LA, { now: { d: 1, m: 14 * 60 } }));   // Tue 2:00 PM: Dahl's 1:00 PM game is under way
+  assert.equal(T.locked(X, 1, 'dE'), true);
+  assert.deepEqual(T.planClick(X, 1, X.days[1].base, 'dL').L.s, ['c1', 'l1', 'dL', 'dE', 'g1']);
+});
+test('lock-aware seating also arranges Fill, start-all and the "who sits?" options', () => {
+  const lineups = LAM.days.map(d => d.base);
+  assert.deepEqual(T.suggestions(LAM, lineups, 1).L.s, ['c1', 'l1', 'dE', 'dL', 'g1']);
+  assert.deepEqual(T.allGamesPlan(LAM, lineups, 'dL').find(x => x.di === 1).L.s, ['c1', 'l1', 'dE', 'dL', 'g1']);
+  // every slot Moe fits holds a player who plays (Xavier Lind, D 7:00 PM, in the D slot): the option where Lind sits is arranged too
+  const X = build(Object.assign({}, LA, { base: ['c1', 'l1', 'dX', 'dE', 'g1'], players: LA_PLAYERS.concat({ id: 'dX', fpg: 1, gp: 2, n: 'Xavier Lind', pos: ['D'], g: { 1: 'CBJ 7:00PM' } }) }));
+  const r = T.planClick(X, 1, X.days[1].base, 'dL');
+  assert.equal(r.k, 'pick');
+  assert.deepEqual(r.opts.find(o => o.out === 'dX').s, ['c1', 'l1', 'dE', 'dL', 'g1']);
+});
+test('lock-aware seating moves only the players whose slot type changes (no rotation through same-type slots)', () => {
+  const B = M.days[3].base, open = dropAt(B, 7), a = T.planClick(M, 3, open, 'l5');   // Thu: Leo Varga (D, 6:00 PM) sits in Skt
+  const moved = open.s.map((q, i) => q !== a.L.s[i] ? i : -1).filter(i => i >= 0);
+  assert.deepEqual(moved.map(i => [M.days[3].slots[i].pos, open.s[i], a.L.s[i]]), [['LW', null, 'l5'], ['D', 'd3', 'd6'], ['Skt', 'd6', 'd3']]);   // 9:00 PM D takes the flex for Luca Ferris (9:00 PM C/LW/RW)
+});
+test('the Grid has no ⋯ menu (2026-10-18, user): no handle button, no CSS for it, nothing in the legend or tooltips points to it', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
+  assert.ok(!src.includes('fgt-hdl'));
+  assert.ok(!src.includes('Click ⋯') && !src.includes('⋯ choose'));
+  for (const returnDates of [false, true]) assert.ok(!T.legendSpec('grid', { returnDates, editing: true }).some(x => x.text.includes('⋯')));
+});
+test('lock-aware seating when a not-playing starter makes room (click and start-all)', () => {
+  // Nils Dorn (D, no game Tue) holds the D slot: Moe takes a slot, Dorn goes to reserve, and Dahl (1:00 PM) still leaves the flex
+  const X = build(Object.assign({}, LA, { base: ['c1', 'l1', 'dN', 'dE', 'g1'], players: LA_PLAYERS.concat({ id: 'dN', fpg: 1, gp: 2, n: 'Nils Dorn', pos: ['D'], g: {} }) }));
+  const r = T.planClick(X, 1, X.days[1].base, 'dL');
+  assert.deepEqual([r.k, r.out, r.L.s], ['move', 'dN', ['c1', 'l1', 'dE', 'dL', 'g1']]);
+  assert.match(r.text, /^Click: starts in Skt · Nils Dorn \(not playing\) to reserve \(others shift slots\)$/);
+  const p = T.allGamesPlan(X, X.days.map(d => d.base), 'dL').find(x => x.di === 1);
+  assert.deepEqual([p.out, p.L.s], ['dN', ['c1', 'l1', 'dE', 'dL', 'g1']]);
+});
+test('arrange keeps the same starters, each in a slot he fits, and never moves a locked or fixed player (random lineups)', () => {
+  let seed = 7; const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (const X of [M, LAM]) for (let di = 0; di < X.days.length; di++) {
+    const d = X.days[di]; if (d.state === 'past' || d.slots === null) continue;
+    let L = clone(d.base);
+    for (let step = 0; step < 300; step++) {
+      const ids = X.order.filter(id => T.onRoster(X, di, id)), r = T.planClick(X, di, L, ids[rnd(ids.length)]);
+      if (r.k === 'move') L = r.L;
+      const s = T.arrange(X, di, L), msg = d.label + ' step ' + step;
+      assert.deepEqual(s.filter(Boolean).sort(), L.s.filter(Boolean).sort(), msg);
+      s.forEach((id, i) => { if (id) assert.ok(T.fits(X, di, id, d.slots[i].posId), msg + ' ' + id); });
+      L.s.forEach((id, i) => { if (id && (id in d.fixed || T.locked(X, di, id))) assert.equal(s[i], id, msg + ' locked ' + id); });
+    }
+  }
+});
+test('arrange leaves a lineup it cannot re-seat as it was (a starter in a slot he does not fit is never dropped)', () => {
+  // Tue 2:00 PM: Gil Moss (G, 1:00 PM) is locked in the only G slot and Gus Hale (G) sits in Skt, where no goalie fits
+  const X = build(Object.assign({}, LA, { now: { d: 1, m: 14 * 60 }, players: LA_PLAYERS.concat({ id: 'g2', fpg: 1, gp: 2, n: 'Gil Moss', pos: ['G'], g: { 1: 'NYI 1:00PM' } }) }));
+  const odd = ['c1', 'l1', null, 'g1', 'g2'];
+  assert.equal(T.locked(X, 1, 'g2'), true);
+  assert.deepEqual(T.arrange(X, 1, { s: odd, ir: [] }), odd);
 });

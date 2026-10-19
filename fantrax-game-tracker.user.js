@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.0
+// @version      1.4.1
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -32,6 +32,8 @@
  *        stayed in Fantrax's reused table body and pushed every row off its header.
  * 1.4.0: first write: edit your own lineups from the Week panel (Columns or Grid, Fill, Save). Each legal day is sent through
  *        Fantrax's own confirmOrExecuteTeamRosterChanges (dry run, execute once, re-read); nothing is sent before Save.
+ * 1.4.1: Grid starts (click, who sits?, start-all, Fill) seat earlier games in the slots later reserve players can't use, so
+ *        the flex stays open for later games (Fantrax locks each player at his puck drop); the Grid's ⋯ menu is gone.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -678,6 +680,62 @@ function seat(M, di, s, id) {
   return aug(id) ? a : null;
 }
 const withoutId = (s, id) => s.map(x => x === id ? null : x);
+// Lock-aware seating (2026-10-18, user): Fantrax locks each player at his own puck drop and a locked player keeps his slot, so the
+// unlocked starters are re-seated earliest game first, each into the slot the fewest later reserve players (a counted game after his)
+// could use; ties keep his slot. The flex goes to the latest games. Same starters, so no points change; locked and fixed never move.
+const lockAt = (M, di, id) => { const g = gameOn(M, di, id); return g && g.start ? g.start.getTime() : Infinity; };
+// Every id gets a slot of his own among `slots` (slot indexes). Slots of one type are interchangeable, so it matches players to
+// types with room (augmenting paths over a handful of types, not every slot).
+function matchable(M, di, ids, slots) {
+  const room = {}, owners = {};
+  for (const i of slots) { const t = M.days[di].slots[i].posId; room[t] = (room[t] || 0) + 1; owners[t] = []; }
+  const types = Object.keys(room);
+  const aug = (id, seen) => {
+    for (const t of types) {
+      if (seen.has(t) || !fits(M, di, id, t)) continue;
+      seen.add(t);
+      if (owners[t].length < room[t]) { owners[t].push(id); return true; }
+      for (let k = 0; k < owners[t].length; k++) if (aug(owners[t][k], seen)) { owners[t][k] = id; return true; }
+    }
+    return false;
+  };
+  return ids.every(id => aug(id, new Set()));
+}
+function arrange(M, di, L) {
+  const d = M.days[di], ord = {}, s = L.s.slice();
+  M.order.forEach((id, i) => { ord[id] = i; });
+  let open = L.s.map((q, i) => i).filter(i => L.s[i] === null || !(L.s[i] in d.fixed || locked(M, di, L.s[i])));
+  const free = open.slice();
+  const U = open.map(i => L.s[i]).filter(Boolean).sort((a, b) => lockAt(M, di, a) - lockAt(M, di, b) || ord[a] - ord[b]);
+  const later = bench(M, di, L).filter(id => counted(M, di, id) && !locked(M, di, id)).map(id => ({ id, t: lockAt(M, di, id) }));
+  if (!later.length) return s;   // nobody could come in later: every slot ties, so everyone keeps his own
+  const memo = {}, demand = (i, t) => { const k = d.slots[i].posId + '|' + t; return memo[k] ?? (memo[k] = later.filter(r => r.t > t && fits(M, di, r.id, d.slots[i].posId)).length); };
+  open.forEach(i => { s[i] = null; });
+  const placed = new Set(), homeOfRest = j => L.s[j] !== null && !placed.has(L.s[j]);
+  let lost = 0;   // players still to seat whose own slot an earlier one took (none: everyone left can sit where he was)
+  for (let k = 0; k < U.length; k++) {
+    const p = U[k], t = lockAt(M, di, p), cur = L.s.indexOf(p), rest = U.slice(k + 1), seen = new Set();
+    if (s[cur] !== null) lost--;
+    placed.add(p);
+    // one slot per type (his own first, then one nobody left needs back), least wanted first; the first that still seats everyone
+    // after him (a legal L always has one; a starter in a slot he does not fit gets none, and the lineup stays as it was)
+    const i = open.filter(j => fits(M, di, p, d.slots[j].posId)).sort((a, b) => (b === cur) - (a === cur) || homeOfRest(a) - homeOfRest(b) || a - b)
+      .filter(j => !seen.has(d.slots[j].posId) && seen.add(d.slots[j].posId)).sort((a, b) => demand(a, t) - demand(b, t))
+      .find(j => (!lost && !homeOfRest(j)) || matchable(M, di, rest, open.filter(x => x !== j)));
+    if (i === undefined) return L.s.slice();
+    if (homeOfRest(i)) lost++;
+    s[i] = p; open = open.filter(x => x !== i);
+  }
+  // Slots of one type are interchangeable: whoever already held one of them keeps his own, so nobody rotates for nothing.
+  for (const posId of new Set(free.map(i => d.slots[i].posId))) {
+    const idx = free.filter(i => d.slots[i].posId === posId), who = idx.map(i => s[i]).filter(Boolean);
+    const stay = who.filter(p => idx.includes(L.s.indexOf(p))), rest = idx.filter(i => !stay.some(p => L.s.indexOf(p) === i));
+    idx.forEach(i => { s[i] = null; });
+    stay.forEach(p => { s[L.s.indexOf(p)] = p; });
+    who.filter(p => !stay.includes(p)).forEach((p, k) => { s[rest[k]] = p; });
+  }
+  return s;
+}
 // For each unlocked, non-fixed occupant of the same group: the seating with him removed (he goes to reserve).
 function swapsFor(M, di, L, id) {
   const out = [], d = M.days[di];
@@ -848,11 +906,11 @@ function moveKind(M, di, L, sel, key) {
   if (after.paired) return { k: m.k, txt: m.txt + pairNote(M, after.paired), pair: pairNote(M, after.paired) };
   return m;
 }
-// ---- 1.4.0 mock parity: the ⋯ list, the open-slot picker and the Fill sentence (mock.js picker / fpgLong).
+// ---- 1.4.0 mock parity: the dock list (the Grid's IR chip on a full IR, a +slot chip), the open-slot picker and the Fill sentence (mock.js picker / fpgLong).
 const gameLine = (M, di, id) => { const r = M.players[id] && M.players[id].row, g = r && r.games.find(x => x.day === M.days[di].day); return g ? (g.opp + ' ' + g.time).trim() : ''; };
 const posText = (M, id) => ((M.players[id].row && M.players[id].row.pos) || '').split(',').map(x => x.trim()).filter(Boolean).join('/');
 const DOCK_RANK = { open: 0, swap: 1, shift: 1, take: 1, irswap: 1, bump: 2, bench: 4, ir: 5, blocked: 9 };
-// The options of the ⋯ list, ranked: open 0, swap/shift/take/irswap 1, bump (not playing) 2, bump (plays) 3, bench 4, ir 5, blocked last.
+// The options of the dock list, ranked: open 0, swap/shift/take/irswap 1, bump (not playing) 2, bump (plays) 3, bench 4, ir 5, blocked last.
 // plays = a bump that benches a player who has a counted game; note / title are the suffix and tooltip the page adds to such an option.
 function dockOptions(M, di, L, sel) {
   const T = [...targetsFor(M, di, L, sel.s)].filter(k => !sel.irOnly || k.startsWith('x:'));
@@ -894,15 +952,16 @@ function planClick(M, di, L, id) {
   }
   const s = N.s.indexOf(id);
   if (s >= 0) { N.s[s] = null; return { k: 'move', L: N, text: 'Click: to reserve (his ' + d.slots[s].pos + ' slot opens)' }; }
-  // 2026-10-18 (user): starting a reserve player whose game would not count gains nothing (and bumped someone); the ⋯ list still can
-  if (!counted(M, di, id)) return { k: 'none', text: (gameOn(M, di, id) ? 'His game ' + d.label + " won't count: nothing to gain" : 'No game ' + d.label + ': nothing to start') + ' (⋯ still moves him)' };
-  const a = seat(M, di, N.s, id);
-  if (a) { N.s = a; return { k: 'move', L: N, text: 'Click: starts in ' + d.slots[a.indexOf(id)].pos + (a.some((x, i) => x !== L.s[i] && x !== id) ? ' (others shift slots)' : '') }; }
+  // 2026-10-18 (user): starting a reserve player whose game would not count gains nothing (and bumped someone)
+  if (!counted(M, di, id)) return { k: 'none', text: gameOn(M, di, id) ? 'His game ' + d.label + " won't count: nothing to gain" : 'No game ' + d.label + ': nothing to start' };
+  const a0 = seat(M, di, N.s, id), a = a0 && arrange(M, di, { s: a0, ir: N.ir });
+  const shift = s2 => s2.some((x, i) => x !== null && x !== L.s[i] && x !== id) ? ' (others shift slots)' : '';
+  if (a) { N.s = a; return { k: 'move', L: N, text: 'Click: starts in ' + d.slots[a.indexOf(id)].pos + shift(a) }; }
   const opts = swapsFor(M, di, L, id);
   if (!opts.length) return { k: 'none', text: 'No slot he fits is free: every one is locked' };
   const idle = opts.filter(o => !counted(M, di, o.out));
-  if (idle.length) { N.s = idle[0].s; return { k: 'move', L: N, out: idle[0].out, text: 'Click: starts in ' + d.slots[N.s.indexOf(id)].pos + ' · ' + M.players[idle[0].out].name + ' (not playing) to reserve' }; }
-  return { k: 'pick', opts, text: 'Every slot he fits holds a player who plays: click to choose who sits' };
+  if (idle.length) { N.s = arrange(M, di, { s: idle[0].s, ir: N.ir }); return { k: 'move', L: N, out: idle[0].out, text: 'Click: starts in ' + d.slots[N.s.indexOf(id)].pos + ' · ' + M.players[idle[0].out].name + ' (not playing) to reserve' + shift(N.s) }; }
+  return { k: 'pick', opts: opts.map(o => ({ out: o.out, s: arrange(M, di, { s: o.s, ir: N.ir }) })), text: 'Every slot he fits holds a player who plays: click to choose who sits' };
 }
 // → the lineup with him in IR, or null (not IR-eligible, locked, fixed, not on the roster, or IR is full).
 function toIR(M, di, L, id) {
@@ -920,9 +979,9 @@ function allGamesPlan(M, lineups, id) {
     if (f.blocked) { plan.push({ di, blocked: true }); continue; }
     L = f.L;
     const a = seat(M, di, L.s, id);
-    if (a) { L.s = a; plan.push({ di, L, out: null, paired: f.paired }); continue; }
+    if (a) { L.s = arrange(M, di, { s: a, ir: L.ir }); plan.push({ di, L, out: null, paired: f.paired }); continue; }
     const idle = swapsFor(M, di, L, id).filter(o => !counted(M, di, o.out));
-    if (idle.length) { L.s = idle[0].s; plan.push({ di, L, out: idle[0].out, paired: f.paired }); continue; }
+    if (idle.length) { L.s = arrange(M, di, { s: idle[0].s, ir: L.ir }); plan.push({ di, L, out: idle[0].out, paired: f.paired }); continue; }
     plan.push({ di, ask: true });
   }
   return plan;
@@ -967,11 +1026,11 @@ function gameRoom(M, lineups) {
 // Start `id` on day di: an open/shiftable slot, else swap out a not-playing, unlocked, non-fixed occupant of his group. → {L, out} | null
 function fillOne(M, di, L, id) {
   const d = M.days[di], s = seat(M, di, L.s, id);
-  if (s) return { L: { s, ir: L.ir.slice() }, out: null };
+  if (s) return { L: { s: arrange(M, di, { s, ir: L.ir }), ir: L.ir.slice() }, out: null };
   for (const q of L.s) {
     if (!q || q in d.fixed || counted(M, di, q) || locked(M, di, q) || isGoalie(M, q) !== isGoalie(M, id)) continue;
     const s2 = seat(M, di, withoutId(L.s, q), id);
-    if (s2) return { L: { s: s2, ir: L.ir.slice() }, out: q };
+    if (s2) return { L: { s: arrange(M, di, { s: s2, ir: L.ir }), ir: L.ir.slice() }, out: q };
   }
   return null;
 }
@@ -2043,17 +2102,14 @@ button.fgt-all:hover{background:#26375a}
 .fgt-cell.fgt-na{cursor:default;color:#3f4454}
 .fgt-cell.fgt-lockd{cursor:not-allowed}
 .fgt-grid td.fgt-c{position:relative}
-.fgt-c .fgt-irb,.fgt-c .fgt-hdl{position:absolute;top:50%;transform:translateY(-50%);font:700 11px/1 sans-serif;border-radius:3px;cursor:pointer;opacity:0;padding:2px 4px}
-.fgt-c .fgt-hdl{right:4px;color:#e5e7eb;background:#3b4256;border:none;font-size:12px}
+.fgt-c .fgt-irb{position:absolute;top:50%;transform:translateY(-50%);font:700 11px/1 sans-serif;border-radius:3px;cursor:pointer;opacity:0;padding:2px 4px}
 .fgt-c .fgt-irb{right:26px;border:1px solid #6b7386;color:#d1d5db;background:#2a2e3c;font-size:9px}
 /* 2026-10-18: the always-visible IR chip is a small corner badge, so the game text and a RET tag keep the whole 118 px cell */
 .fgt-c.fgt-hasirb .fgt-irb{right:5px;top:3px;transform:none;opacity:1;font:700 8px/9px sans-serif;padding:0 2px;background:#1c1f2b}
-.fgt-c.fgt-hasirb .fgt-hdl{right:26px}
 .fgt-c.fgt-hasirb .fgt-cell:has(.fgt-tag){padding-right:20px}
 
-.fgt-c:hover .fgt-irb,.fgt-c:hover .fgt-hdl,.fgt-c:focus-within .fgt-irb,.fgt-c:focus-within .fgt-hdl{opacity:1}
-@media (hover:none){.fgt-c .fgt-irb,.fgt-c .fgt-hdl{opacity:.85}}
-.fgt-c .fgt-hdl:hover{background:#4a5268;color:#fff}
+.fgt-c:hover .fgt-irb,.fgt-c:focus-within .fgt-irb{opacity:1}
+@media (hover:none){.fgt-c .fgt-irb{opacity:.85}}
 .fgt-cell.fgt-gx{position:relative;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:3px}
 .fgt-cell.fgt-gx .fgt-gt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .fgt-cell.fgt-gx>:not(.fgt-gt){flex:none}
@@ -2165,7 +2221,7 @@ function syncEdit(route, team, key, now, opts, fresh) {
   if (EDIT.editing) Object.assign(EDIT, stillOpen(EDIT.model, EDIT.lineups, keep));
 }
 // An open choice survives a redraw from fresh data while it still applies (tab return, resize and a refresh already in flight
-// redraw without asking editPaused): "who sits?" while that click is still a pick (its options recomputed); a ⋯ selection while
+// redraw without asking editPaused): "who sits?" while that click is still a pick (its options recomputed); a dock selection while
 // its day is still editable and what it selected is still there.
 function stillOpen(M, lineups, { sel, pick }) {
   const live = di => di >= 0 && di < M.days.length && M.days[di].slots !== null && M.days[di].state !== 'past';
@@ -2179,7 +2235,7 @@ function stillOpen(M, lineups, { sel, pick }) {
 }
 // The timed and DOM-mutation refreshes skip while this is true (roster page only): moves pending / in conflict for the current
 // pending key — the same count the save (or pending) bar shows, so a pause always has a visible bar and Discard — or an open
-// "who sits?" / ⋯ choice, which a redraw would wipe (2026-10-18: being editable alone no longer pauses; the skipped 5-minute tick
+// "who sits?" / dock choice, which a redraw would wipe (2026-10-18: being editable alone no longer pauses; the skipped 5-minute tick
 // is the spec's "waits", the next one comes at most 5 min later).
 function editPaused() {
   if (!EDIT.pkey || !EDIT.model || typeof location === 'undefined' || parseRoute(location.href).page !== 'roster') return false;
@@ -2615,7 +2671,6 @@ function legendSpec(view, o) {
   const common = [it(null, 'dimmed column = already played'), it(null, '🔒 game started'), it(null, 'Day header ↗ opens that day on Fantrax')];
   const edit = !o.editing ? [] : grid ? [
     it(null, 'click a cell: starts or benches him (hover to preview)'),
-    it(null, '⋯ choose the slot yourself'),
     it('border:1px dashed #60a5fa', 'open slot or swap'),
     it('border:1px dashed #f59e0b', 'that player goes to reserve'),
     it('border:1.5px solid #4ade80', 'green: who could sit, when every slot he fits holds a player who plays'),
@@ -2673,8 +2728,8 @@ function buildColumnsBody(E) {
   const legend = buildLegend('columns', E);
   return [el('div', { class: 'fgt-wkbody' }, [cols]), legend];
 }
-// Grid body (1.4.0, Task 12): player x day. Editing: one click = planClick (the hover outlines previewDiff's cells), ⋯ opens the Columns
-// selection (EDIT.sel, same colMoveClick) as a list in the bottom dock, a chip in a day header selects an open slot, IR chip where toIR
+// Grid body (1.4.0, Task 12): player x day. Editing: one click = planClick (the hover outlines previewDiff's cells; lock-aware seating,
+// so the ⋯ menu was removed 2026-10-18), the IR chip on a full IR opens the Columns selection (EDIT.sel, same colMoveClick) as a list in the dock, a chip in a day header selects an open slot, IR chip where toIR
 // allows, "start all games" per row. "Who sits?" is EDIT.pick = {di, id, opts}. Read-only: the same cells from Fantrax's lineups, inert.
 const gameOfDay = (M, di, id) => { const r = M.players[id].row; return r ? r.games.find(g => g.day === M.days[di].day) || null : null; };
 // The Grid cell's text without a game: 'no game' for a slot or reserve cell (2026-10-18: a reserve cell's lone dot read as blank),
@@ -2687,7 +2742,7 @@ function gridCellClick(di, id) {
   if (EDIT.saving) return;
   const M = EDIT.model, L = EDIT.lineups[di];
   EDIT.toast = '';
-  if (EDIT.sel) {   // a ⋯ selection is open: a lit cell of that day takes the move, anything else just closes it
+  if (EDIT.sel) {   // a dock selection is open: a lit cell of that day takes the move, anything else just closes it
     const T = EDIT.sel.di === di ? selTargets(M, di, L, EDIT.sel) : null, k = irTargetKey(T, L, id, gridKey(L, id));
     if (T && T.has(k)) return colMoveClick(di, k);
     EDIT.sel = null; return rerenderWeek();
@@ -2758,7 +2813,7 @@ function gridCellNode(E, di, id, lineups, ledger, T) {
   if (isSel) cls += ' fgt-sel'; else if (mk) cls += ' fgt-tgt' + (mk.k === 'bump' || mk.k === 'bench' ? ' fgt-bump' : '') + (mk.k === 'blocked' ? ' fgt-blockd' : ''); else if (T) cls += ' fgt-dim';
   else if (E.pick) cls += E.pick.di === di && E.pick.id === id ? ' fgt-sel' : pickTarget(E.pick, di, id) ? ' fgt-tgt fgt-sits' : ' fgt-dim';
   const base = act ? 'In ' + c.slot : inIR ? 'On IR' : 'On the bench (reserve)';
-  const pt = E.pick && pickTarget(E.pick, di, id), full = g ? gameText(M, di, id, true) + ' · ' : '', tip = full + (pt ? pickTip(M, E.pick, id) : mk ? (mk.k === 'blocked' ? mk.why + '.' : 'Click: ' + mk.txt + '.') : c.locked ? 'Locked: ' + lockWhy(M, di, id) : plan ? plan.text + '. Click ⋯ to pick the slot yourself.' : base);
+  const pt = E.pick && pickTarget(E.pick, di, id), full = g ? gameText(M, di, id, true) + ' · ' : '', tip = full + (pt ? pickTip(M, E.pick, id) : mk ? (mk.k === 'blocked' ? mk.why + '.' : 'Click: ' + mk.txt + '.') : c.locked ? 'Locked: ' + lockWhy(M, di, id) : plan ? plan.text + '.' : base);
   const kids = [];
   if (act) kids.push(el('span', { class: 'fgt-sl', text: c.slot })); else if (inIR) kids.push(el('span', { class: 'fgt-sl', style: 'color:#fca5a5', text: 'IR' }));
   kids.push(el('span', { class: 'fgt-gt', text: gridCellText(c, g ? gameText(M, di, id) : '') }));
@@ -2768,7 +2823,7 @@ function gridCellNode(E, di, id, lineups, ledger, T) {
   if (inIR && irIneligibleKnown(M, di, id)) kids.push(notIRTag());   // mock parity #3, read-only too
   if (c.locked && d.state !== 'past') kids.push(el('span', { class: 'fgt-lk', text: '🔒', title: lockWhy(M, di, id) }));
   const node = el('button', { type: 'button', class: cls, title: tip, 'data-g2': di + '|' + id }, kids);
-  td.appendChild(node);   // the cell first: the ⋯ and IR buttons are its siblings (tab order, no interactive nesting)
+  td.appendChild(node);   // the cell first: the IR button is its sibling (tab order, no interactive nesting)
   if (!E.editing) { node.setAttribute('disabled', ''); return td; }
   if (live) {
     // IR chip, always visible (mock parity #1): with room it moves him to IR; IR full, he is IR-eligible -> the dock lists one swap per IR player
@@ -2778,7 +2833,6 @@ function gridCellNode(E, di, id, lineups, ledger, T) {
     else if (swap) td.appendChild(click(el('button', { type: 'button', class: 'fgt-irb', title: 'IR is full: choose who comes out of IR on ' + shortDay(M, di), 'aria-label': M.players[id].name + ': IR is full, choose who he swaps with on ' + shortDay(M, di), text: 'IR' }),
       e => { e.stopPropagation(); Object.assign(EDIT, { toast: '', pick: null, sel: { di, key, s: selOf(key), irOnly: true } }); rerenderWeek(); }));
     if (ir || swap) td.classList.add('fgt-hasirb');
-    if (!c.locked) td.appendChild(click(el('button', { type: 'button', class: 'fgt-hdl', title: 'Choose where he goes', 'aria-label': M.players[id].name + ': choose where he goes on ' + shortDay(M, di), text: '⋯' }), e => { e.stopPropagation(); EDIT.pick = null; colMoveClick(di, key); }));
     click(node, () => gridCellClick(di, id));
   } else if (d.state === 'past' || c.locked) click(node, () => { Object.assign(EDIT, { toast: c.locked ? 'Locked: ' + lockWhy(M, di, id) + '.' : '', sel: null, pick: null }); rerenderWeek(); });
   return td;
@@ -2857,7 +2911,7 @@ function buildGridBody(E) {
   ]);
   const table = el('table', { class: 'fgt-grid', style: '--fgt-days:' + M.days.length }, [el('thead', {}, [el('tr', {}, [el('th', { class: 'fgt-whoh', text: 'Player' + (E.extras ? ' · ' + fpgHeader() : '') })].concat(heads))]), el('tbody', {}, body), tfoot]);
   if (E.editing) {
-    table.addEventListener('mouseover', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (!c || e.target.closest('.fgt-hdl, .fgt-irb')) clearPreview(); else showPreview(table, c); });
+    table.addEventListener('mouseover', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (!c || e.target.closest('.fgt-irb')) clearPreview(); else showPreview(table, c); });
     table.addEventListener('mouseout', e => { if (e.target.closest && e.target.closest('[data-g2]')) clearPreview(); });
     table.addEventListener('focusin', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (c) showPreview(table, c); else clearPreview(); });   // keyboard focus previews like hover
     table.addEventListener('focusout', clearPreview);
@@ -3055,7 +3109,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, planChunks, applyDayStatuses, statusLabel, statusShort,
-    compute, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
+    compute, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, reuseSchedule, SCHEDULE_REUSE_MS, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates, parseSeasonStats, parseRosterLimits, ownTeamId, isOwnTeam, isDailyLineups, loadEditExtras, fieldMapFromLineup, interpretResponse, lineupMsg, saveDay, saveAll };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }

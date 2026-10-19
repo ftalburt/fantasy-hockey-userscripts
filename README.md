@@ -35,8 +35,10 @@ On your own team (in a league with daily lineups), the Week panel is editable as
 Fantrax until you press **Save**.
 
 - **Move players:** click a player or open slot (Columns) or a cell (Grid) to start or sit him for that day. If someone
-  has to sit to make room, the cells you can choose light up; click one, or **Cancel**. `⋯` lists every move for that
-  player and day, and the IR chips move players in and out of IR.
+  has to sit to make room, the cells you can choose light up; click one, or **Cancel**. The IR chips move players in
+  and out of IR. In the Grid, the script picks each starter's slot: players whose games start earlier get the slots
+  later players can't use, so the flex (Skt) stays open for later games (Fantrax locks each player when his game
+  starts). To choose a slot yourself, use Columns.
 - **Fill:** `start +N` starts a player in every remaining game he can play (`✓ all` means he already does).
   `Fill <N>` in a day header, or **Fill every day**, fills open slots with the best players by their Fantrax FP/G this
   season (shown under each name), never going past the games max.
