@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.1
+// @version      1.4.2
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -2369,7 +2369,7 @@ function editControl() {
 function buildWeekHead(collapsed) {
   const M = EDIT.model, team = EDIT.team, paused = editPaused();
   const toggle = click(el('a', { href: '#', text: (collapsed ? '▸' : '▾') + ' Week' }), () => { setWeekCollapsed(!collapsed); rerenderWeek(); });
-  const views = el('span', { class: 'fgt-seg', role: 'group', title: 'View' }, [['columns', 'Columns'], ['grid', 'Grid']].map(([v, label]) =>
+  const views = el('span', { class: 'fgt-seg', role: 'group', 'aria-label': 'View' }, [['columns', 'Columns'], ['grid', 'Grid']].map(([v, label]) =>
     click(el('button', { type: 'button', 'aria-pressed': String(EDIT.view === v), text: label }), () => { EDIT.view = v; setWeekViewChoice(v); Object.assign(EDIT, { sel: null, pick: null }); rerenderWeek(); })));
   const kids = [views, toggle, el('b', { text: dayLabel(team.period.start) + ' – ' + dayLabel(team.period.end) }), el('span', { text: 'now: ' + dayLabel(M.today) + ' ' + clock(EDIT.now) })];
   if (EDIT.opts && EDIT.opts.returnDates) kids.push(el('span', { style: 'color:' + RET_COLOR, text: 'return dates on' }));
@@ -2386,7 +2386,7 @@ function meterRow(label, v) {
   const seg = (from, w, bg) => el('span', { class: 'fgt-seg2', style: 'left:' + pct(from) + ';width:' + pct(w) + ';background:' + bg });
   const bar = [seg(0, v.played, '#5b8def'), seg(v.played, savedSched, '#355a99')];
   if (v.delta > 0) bar.push(seg(v.played + savedSched, v.delta, 'repeating-linear-gradient(135deg,#fbbf24 0 3px,#a8801a 3px 6px)'));
-  if (v.max !== null) bar.push(el('span', { class: 'fgt-mx', style: 'left:' + pct(v.max), title: 'max ' + v.max }));
+  if (v.max !== null) bar.push(el('span', { class: 'fgt-mx', style: 'left:' + pct(v.max) }));
   const room = v.max === null ? el('span', { class: 'fgt-good', text: 'no max' }) : v.over > 0 ? el('span', { class: 'fgt-bad', text: 'over by ' + v.over + ': the last ' + v.over + " won't count" })
     : el('span', { class: 'fgt-good', text: v.over === 0 ? 'exactly at the max' : -v.over + ' left' });
   const sub = [];
@@ -2405,7 +2405,7 @@ function buildMeter() {
 function dayHead(di) {
   const M = EDIT.model, d = M.days[di], v = dayHeadView(M, EDIT.editing ? EDIT.lineups : baseOf(M), di);
   const kids = [d.n === null ? el('b', { text: d.label }) : el('a', { href: dayHref(EDIT.route, d.n), target: '_blank', rel: 'noopener', title: 'Open ' + d.label + ' on Fantrax' }, [d.label, el('span', { class: 'fgt-go', text: '↗' })])];
-  if (d.state === 'past') kids.push(el('em', { class: 'fgt-dst', title: 'Played: locked', text: 'played' }));
+  if (d.state === 'past') kids.push(el('em', { class: 'fgt-dst', text: 'played' }));
   else if (v.locked) kids.push(el('em', { class: 'fgt-dst', title: 'Fantrax has locked today: every game has started, nobody can be moved', text: 'locked' }));
   else if (d.state === 'today') kids.push(el('em', { class: 'fgt-dst fgt-dst-today', title: 'Today: players whose game started are locked', text: 'today' }));
   if (EDIT.editing && v.fillN) kids.push(click(el('button', { type: 'button', class: 'fgt-minifill', title: v.fillTip, text: 'Fill ' + v.fillN }), () => fillDayClick(di)));
@@ -2813,7 +2813,7 @@ function gridCellNode(E, di, id, lineups, ledger, T) {
   if (isSel) cls += ' fgt-sel'; else if (mk) cls += ' fgt-tgt' + (mk.k === 'bump' || mk.k === 'bench' ? ' fgt-bump' : '') + (mk.k === 'blocked' ? ' fgt-blockd' : ''); else if (T) cls += ' fgt-dim';
   else if (E.pick) cls += E.pick.di === di && E.pick.id === id ? ' fgt-sel' : pickTarget(E.pick, di, id) ? ' fgt-tgt fgt-sits' : ' fgt-dim';
   const base = act ? 'In ' + c.slot : inIR ? 'On IR' : 'On the bench (reserve)';
-  const pt = E.pick && pickTarget(E.pick, di, id), full = g ? gameText(M, di, id, true) + ' · ' : '', tip = full + (pt ? pickTip(M, E.pick, id) : mk ? (mk.k === 'blocked' ? mk.why + '.' : 'Click: ' + mk.txt + '.') : c.locked ? 'Locked: ' + lockWhy(M, di, id) : plan ? plan.text + '.' : base);
+  const pt = E.pick && pickTarget(E.pick, di, id), full = g ? gameText(M, di, id, true) + ' · ' : '', tip = d.state === 'past' ? full.slice(0, -3) : full + (pt ? pickTip(M, E.pick, id) : mk ? (mk.k === 'blocked' ? mk.why + '.' : 'Click: ' + mk.txt + '.') : c.locked ? 'Locked: ' + lockWhy(M, di, id) : plan ? plan.text + '.' : base);
   const kids = [];
   if (act) kids.push(el('span', { class: 'fgt-sl', text: c.slot })); else if (inIR) kids.push(el('span', { class: 'fgt-sl', style: 'color:#fca5a5', text: 'IR' }));
   kids.push(el('span', { class: 'fgt-gt', text: gridCellText(c, g ? gameText(M, di, id) : '') }));
@@ -2938,7 +2938,8 @@ function buildWeekPanel() {
     kids.push(...body.filter(n => !isLegend(n)));
     kids.push(...body.filter(isLegend));
   }
-  return el('div', { class: 'fgt-wk' + (EDIT.saving ? ' fgt-saving' : ''), 'data-fgt': 'week', 'data-fgt-key': EDIT.key, style: 'flex:1 1 100%;min-width:0' }, kids);
+  // title '': the panel sits inside Fantrax's <headline title="Team Roster">, whose tooltip every untitled spot in it would inherit
+  return el('div', { class: 'fgt-wk' + (EDIT.saving ? ' fgt-saving' : ''), 'data-fgt': 'week', 'data-fgt-key': EDIT.key, title: '', style: 'flex:1 1 100%;min-width:0' }, kids);
 }
 
 // The headline is a flex row (title block ~900 px + team picker); letting it wrap and giving the panel a 100% basis puts
