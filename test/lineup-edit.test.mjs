@@ -1759,3 +1759,44 @@ test('arrange leaves a lineup it cannot re-seat as it was (a starter in a slot h
   assert.equal(T.locked(X, 1, 'g2'), true);
   assert.deepEqual(T.arrange(X, 1, { s: odd, ir: [] }), odd);
 });
+
+test('nameLinkIn: by headshot id first; else by name + position + team, one such id-less row, him on the roster, no identical namesake', () => {
+  const me = (id, name, key, stillOn = true) => ({ id, name, key, stillOn });
+  const C = { link: 'C', hid: '048x9', name: 'Elias Pettersson', key: 'C-VAN' }, D = { link: 'D', hid: '05abc', name: 'Elias Pettersson', key: 'D-VAN' };
+  assert.equal(T.nameLinkIn([C, D], me('05abc', 'Elias Pettersson', 'D-VAN'), [{ id: '048x9', key: 'C-VAN' }]), 'D');
+  assert.equal(T.nameLinkIn([C, D], me('048x9', 'Elias Pettersson', 'C-VAN'), [{ id: '05abc', key: 'D-VAN' }]), 'C');
+  assert.equal(T.nameLinkIn([C], me('05abc', 'Elias Pettersson', 'D-VAN', false), []), null);      // dropped D: never C's card
+  const R = { link: 'R', hid: null, name: 'T.J. Hughes', key: 'RW-COL' };
+  assert.equal(T.nameLinkIn([C, R], me('07zzz', 'T.J. Hughes', 'RW-COL'), []), 'R');                // rookie without a headshot
+  assert.equal(T.nameLinkIn([C, R], me('07zzz', 'T.J. Hughes', 'RW-COL', false), []), null);       // dropped: the row is someone else
+  assert.equal(T.nameLinkIn([C, R], me('07zzz', 'T.J. Hughes', 'C-COL'), []), null);               // position/team differ: someone else
+  assert.equal(T.nameLinkIn([R, { ...R, link: 'R2' }], me('07zzz', 'T.J. Hughes', 'RW-COL'), []), null);   // two identical id-less rows
+  assert.equal(T.nameLinkIn([{ ...R, hid: '06aaa' }], me('07zzz', 'T.J. Hughes', 'RW-COL'), []), null);    // the row is someone else (other id)
+  assert.equal(T.nameLinkIn([], me('07zzz', 'T.J. Hughes', 'RW-COL'), []), null);                  // not in the table
+  // Two Jack Hughes: NJD (headshot 04bdb) and the LAK rookie (05rin, none) on one roster.
+  const N = { link: 'N', hid: '04bdb', name: 'Jack Hughes', key: 'F-NJD' }, L = { link: 'L', hid: null, name: 'Jack Hughes', key: 'F-LAK' };
+  assert.equal(T.nameLinkIn([N, L], me('04bdb', 'Jack Hughes', 'F-NJD'), [{ id: '05rin', key: 'F-LAK' }]), 'N');
+  assert.equal(T.nameLinkIn([N, L], me('05rin', 'Jack Hughes', 'F-LAK'), [{ id: '04bdb', key: 'F-NJD' }]), 'L');
+  // Two Nick Jones, neither with a headshot: told apart by position and team.
+  const J1 = { link: 'J1', hid: null, name: 'Nick Jones', key: 'F-(N/A)' }, J2 = { link: 'J2', hid: null, name: 'Nick Jones', key: 'D-SJS' };
+  assert.equal(T.nameLinkIn([J1, J2], me('0597z', 'Nick Jones', 'F-(N/A)'), [{ id: '03iy3', key: 'D-SJS' }]), 'J1');
+  assert.equal(T.nameLinkIn([J1, J2], me('03iy3', 'Nick Jones', 'D-SJS'), [{ id: '0597z', key: 'F-(N/A)' }]), 'J2');
+  // Identical name, position and team, both id-less and rostered: the rows can't be told apart, so neither opens.
+  assert.equal(T.nameLinkIn([J1, { ...J1, link: 'J3' }], me('0597z', 'Nick Jones', 'F-(N/A)'), [{ id: '0aaaa', key: 'F-(N/A)' }]), null);
+  assert.equal(T.nameLinkIn([J1], me('0597z', 'Nick Jones', 'F-(N/A)'), [{ id: '0aaaa', key: 'F-(N/A)' }]), null);
+  // Dropped Nick Jones F (stale Grid) while Nick Jones D was added: D's row does not match F's position/team.
+  assert.equal(T.nameLinkIn([J2], me('0597z', 'Nick Jones', 'F-(N/A)'), []), null);
+});
+
+test('posTeamKey: Fantrax row text and the roster call give the same key', () => {
+  assert.equal(T.posTeamKey(' RW(R) -  CHI '), 'RW-CHI');
+  assert.equal(T.posTeamKey('RW' + '-' + 'CHI'), 'RW-CHI');
+  assert.equal(T.posTeamKey('C,LW,RW - BOS'), T.posTeamKey('C,LW,RW-BOS'));
+  assert.equal(T.posTeamKey('F - (N/A)'), 'F-(N/A)');
+});
+
+test('headshotId: the scorerId in Fantrax\'s headshot URL', () => {
+  assert.equal(T.headshotId('url("https://fantraximg.com/si/headshots/NHL/hs048x9_96_9.png")'), '048x9');
+  assert.equal(T.headshotId('url("https://fantraximg.com/assets/images/icons/player-news/player-news--recent.png")'), null);
+  assert.equal(T.headshotId(''), null);
+});

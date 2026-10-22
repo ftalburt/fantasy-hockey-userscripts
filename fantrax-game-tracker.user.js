@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.5
+// @version      1.4.6
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -41,6 +41,9 @@
  *        and a player already in IR on the returning player's date is no longer offered as his free IR swap.
  * 1.4.5: the Grid's FP/G · GP is the player's NHL season for every viewer; it followed the viewer's last Fantrax "Stats Type"
  *        pick, so a viewer on "Fantasy Team" saw only the games each player played for the team.
+ * 1.4.6: a name in the Grid opens Fantrax's player card (it clicks Fantrax's own link for him in the roster table, found by the
+ *        player id in its headshot, or for a rookie without one by name, position and team; players dropped earlier in the
+ *        week are not in that table and have no card).
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -204,7 +207,7 @@ function parseScheduleRows(data, period) {
         const cell = row.cells && row.cells[c.index];
         if (cell && cell.eventId) games.push(Object.assign({ day: c.day, start: parseStart(cell.content, c.day), started: isStartedCell(cell.content) }, parseGameText(cell.content)));
       }
-      out[group].push({ id: row.scorer.scorerId || '', name: row.scorer.name || row.scorer.shortName || '', shortName: row.scorer.shortName || row.scorer.name || '', pos: row.scorer.posShortNames || '',
+      out[group].push({ id: row.scorer.scorerId || '', name: row.scorer.name || row.scorer.shortName || '', shortName: row.scorer.shortName || row.scorer.name || '', pos: row.scorer.posShortNames || '', team: row.scorer.teamShortName || '',
         injured: (row.scorer.icons || []).some(i => INJURY_ICON_TYPES.has(String(i.typeId))), tag: iconTag(row.scorer.icons), flag: rowFlag(row.scorer.icons),
         returnDate: null, returnText: null, games });
     }
@@ -940,6 +943,34 @@ const openOption = (M, di, id) => M.players[id].name + ' · ' + (gameLine(M, di,
 // The Grid name cell's tooltip: the Fill sentence once the edit extras are loaded, the player's name before (read-only).
 // 2026-10-21: Fill exists only where the panel is editable; elsewhere (another team, a finished week) the name and FP/G.
 const nameTitle = (M, id, extras) => !extras ? M.players[id].name : M.editable ? fpgLong(M, id) : M.players[id].name + ' · ' + fpgText(M, id);
+// 2026-10-22 (user): a Grid name opens Fantrax's own player card. Fantrax's name links have no href or player id (an Angular
+// click handler), so the Grid clicks Fantrax's link for him in the roster table below it, found by the scorerId in the row's
+// headshot URL (".../headshots/NHL/hs048x9_96_9.png"; all 30 roster rows matched their scorerId, 2026-10-22), since names
+// repeat (two Elias Petterssons in VAN). Rookies often have no headshot (empty figure: 134 of players 501-1000, 2026-10-22);
+// such a row matches by name plus position and team ("F - (N/A)" vs "D - SJS" for the two Nick Joneses; the row's text equals
+// posShortNames - teamShortName from the roster call once "(R)" and spaces are dropped: all 304 roster rows in both leagues,
+// 2026-10-22). It is used only when it is the one such id-less row, he is on the roster, and no other rostered Grid player
+// with the same name, position and team lacks an id row (the rows would be identical). A player dropped earlier in the week
+// is not in the table, and one added since the Grid's last refresh must match all three to be mistaken for him.
+// rows: [{link, hid (headshot scorerId or null), name, key}]; me: {id, name, key, stillOn}; namesakes: [{id, key}], the OTHER
+// rostered Grid players with his name.
+function nameLinkIn(rows, me, namesakes) {
+  const byId = rows.find(r => r.hid !== null && r.hid === me.id);
+  if (byId) return byId.link;
+  if (!me.stillOn || namesakes.some(x => x.key === me.key && !rows.some(r => r.hid === x.id))) return null;
+  const same = rows.filter(r => r.hid === null && r.name === me.name && r.key === me.key);
+  return same.length === 1 ? same[0].link : null;
+}
+// "RW(R) - CHI" (row text) and "RW" + "CHI" (roster call) both → "RW-CHI".
+const posTeamKey = text => String(text || '').replace(/\(R\)/g, '').replace(/\s+/g, '');
+const headshotId = bg => { const m = /\/hs([0-9a-z]+)_[^/]*$/i.exec(String(bg || '').replace(/["')]+$/, '')); return m ? m[1] : null; };
+function fantraxNameRows(doc) {
+  return [...doc.querySelectorAll('scorer')].map(sc => {
+    const link = sc.querySelector('.scorer__info__name a'), fig = sc.querySelector('.scorer__image');
+    const pt = sc.querySelector('.scorer__info__positions');
+    return link && { link, hid: headshotId(fig && fig.style.backgroundImage), name: link.textContent.trim(), key: posTeamKey(pt && pt.textContent) };
+  }).filter(Boolean);
+}
 const OPEN_NONE = 'Nobody on reserve or IR fits it.';
 // Why Fill ranks a player as it does (tooltip on the Grid's name cell).
 function fpgLong(M, id) {
@@ -2092,6 +2123,9 @@ const WEEK_CSS = `
 .fgt-grid .fgt-who{padding:2px 6px 2px 8px;white-space:nowrap}
 .fgt-grid .fgt-who .fgt-wr{display:flex;align-items:center;gap:4px}
 .fgt-grid .fgt-who .fgt-wn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.fgt-grid .fgt-wl{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:default;text-align:left}
+.fgt-grid .fgt-wl.fgt-wl-on{cursor:pointer}
+.fgt-grid .fgt-wl.fgt-wl-on:hover,.fgt-grid .fgt-wl.fgt-wl-on:focus-visible{color:#93c5fd;text-decoration:underline}
 .fgt-grid .fgt-who .fgt-p{display:block;color:#7c8497;font-size:10px;overflow:hidden;text-overflow:ellipsis}
 .fgt-all{flex:0 0 auto;font:10px sans-serif;border-radius:9px;padding:0 6px;border:1px solid #363c52;color:#7c8497;background:none;white-space:nowrap}
 button.fgt-all{color:#93c5fd;border-color:#33507f;background:#1f2c46;cursor:pointer}
@@ -2926,7 +2960,15 @@ function buildGridBody(E) {
     body.push(el('tr', { class: 'fgt-grp' }, [el('td', { class: 'fgt-gl', text: g }), el('td', { colspan: String(M.days.length) })]));
     for (const id of ids) {
       const p = M.players[id], sub = [(p.row && p.row.pos) || '', E.extras ? fpgShort(M, id) : '–'].filter(Boolean).join(' · ');
-      const kids = [el('span', { class: 'fgt-wn' }, [p.shortName || p.name, el('span', { class: 'fgt-p', text: sub })])];
+      // Fantrax may draw (or redraw) its table after the Grid, so the link is looked up on hover, focus and click, not here.
+      const lastDay = M.days.filter(d => d.slots !== null).pop(), stillOn = !lastDay || onRoster(M, M.days.indexOf(lastDay), id);
+      const keyOf = x => posTeamKey(((M.players[x].row && M.players[x].row.pos) || '') + '-' + ((M.players[x].row && M.players[x].row.team) || ''));
+      const namesakes = (lastDay ? M.order.filter(x => x !== id && M.players[x].name === p.name && onRoster(M, M.days.indexOf(lastDay), x)) : []).map(x => ({ id: x, key: keyOf(x) }));
+      const card = () => nameLinkIn(fantraxNameRows(document), { id, name: p.name, key: keyOf(id), stillOn }, namesakes);
+      const nm = click(el('button', { type: 'button', class: 'fgt-wl', text: p.shortName || p.name }), () => { const a = card(); if (a) a.click(); });
+      const mark = () => nm.classList.toggle('fgt-wl-on', !!card());
+      nm.addEventListener('mouseenter', mark); nm.addEventListener('focus', mark);
+      const kids = [el('span', { class: 'fgt-wn' }, [nm, el('span', { class: 'fgt-p', text: sub })])];
       // 2026-10-18: the start-all state shows without a hover; none on the started-on-IR rows (coming off IR is another move)
       const pill = E.editing && loaded && g !== irGroup.g ? allGamesPill(M, lineups, id) : null;
       if (pill && pill.state !== 'none') {
@@ -3146,7 +3188,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, planChunks, applyDayStatuses, statusLabel, statusShort,
-    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
+    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, nameLinkIn, posTeamKey, headshotId, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, reuseSchedule, SCHEDULE_REUSE_MS, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates, parseSeasonStats, parseRosterLimits, ownTeamId, isOwnTeam, isDailyLineups, loadEditExtras, fieldMapFromLineup, interpretResponse, lineupMsg, saveDay, saveAll };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }
