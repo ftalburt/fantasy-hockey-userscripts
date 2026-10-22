@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.3
+// @version      1.4.4
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -37,6 +37,8 @@
  * 1.4.2: the Week panel no longer inherits Fantrax's "Team Roster" tooltip; tooltips that repeat what is on screen are gone.
  * 1.4.3: the Grid's FP/G · GP also for players dropped earlier in the week (their season from the last day they were on the
  *        roster) and on other teams and finished weeks (read-only).
+ * 1.4.4: an IR line names the slot his remaining games are in (played today in G, IR from tomorrow read "On ACTIVE"),
+ *        and a player already in IR on the returning player's date is no longer offered as his free IR swap.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -411,13 +413,15 @@ function formatEffect(e) {
 //   cleared — Fantrax no longer allows him in that slot (his eligibleStatusIds lack its status; with no eligibility
 //             data, the injury flag being gone stands in): games = all pending games; the roster is illegal until he moves.
 //   back    — flagged, with an effective return date on or before the period's end (so only with the option on): games
-//             = pending games from that date; swapCandidates = players whose CURRENT slot is Active or Reserve, whom
+//             = pending games from that date; swapCandidates = players in an Active or Reserve slot on his date, whom
 //             Fantrax says may enter that status, and who have no counted pending game — they can take the spot for free.
-// "Current slot" = the latest lineup day on or before today that lists him, else the earliest that does.
-function currentStatusId(row, today) {
+// A player's slot on a day = the latest lineup day on or before it that lists him, else the earliest that does. The entry's
+// slot is the one on his first pending game's day, and a candidate's is the one on the returning player's date: today's slot
+// misleads once today's game has started (2026-10-21: in G today, IR from tomorrow read "On ACTIVE" and was offered as an IR swap).
+function slotOn(row, day) {
   const days = Object.keys(row.statusIds || {}).sort();
   if (!days.length) return null;
-  const past = days.filter(d => d <= today);
+  const past = days.filter(d => d <= day);
   return row.statusIds[past.length ? past[past.length - 1] : days[0]];
 }
 function offLineup(team, now, opts = {}) {
@@ -426,12 +430,11 @@ function offLineup(team, now, opts = {}) {
   const pendingIn = row => row.games.filter(g => days.has(g.day) && isPending(g, today, now));
   const inLineup = g => g.status === 'active' || g.status === 'reserve';
   const counted = row => pendingIn(row).some(g => inLineup(g) && countsGame(row, g, today, opts));
-  const lineupNow = all.map(([r]) => r).filter(r => { const c = currentStatusId(r, today); return c === '1' || c === '2'; });
   const out = [];
   for (const [row, goalie] of all) {
     const pending = pendingIn(row);
     if (!pending.length || pending.some(inLineup)) continue;
-    const statusId = currentStatusId(row, today) || pending[pending.length - 1].statusId || null;
+    const statusId = slotOn(row, pending[0].day) || pending[pending.length - 1].statusId || null;
     const statusName = statusLabel(names, statusId), short = statusShort(statusName);
     const base = { id: row.id, name: row.shortName || row.name, statusId, statusName, short };
     if (goalie) base.goalie = true;
@@ -442,7 +445,7 @@ function offLineup(team, now, opts = {}) {
     if (!date || date > period.end) continue;
     const games = pending.filter(g => g.day >= date).length;
     if (!games) continue;
-    const swapCandidates = lineupNow.filter(r => r !== row && (r.eligible || []).includes(String(statusId)) && !counted(r))
+    const swapCandidates = all.map(([r]) => r).filter(r => r !== row && ['1', '2'].includes(slotOn(r, date)) && (r.eligible || []).includes(String(statusId)) && !counted(r))
       .map(r => ({ id: r.id, name: r.shortName || r.name, flagWord: FLAG_WORD[r.flag] || 'no flag' }));
     out.push(Object.assign(base, { kind: 'back', date, games, swapCandidates }));
   }

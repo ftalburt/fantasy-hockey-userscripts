@@ -838,6 +838,21 @@ test('offLineup: rows classified by pending games and current slot — moved to 
   const x = T.offLineup(team, NOW_THU_18, { returnDates: true });
   assert.deepEqual(x.map(e => [e.name, e.kind, e.games, e.swapCandidates.map(c => c.name)]), [['Larkin', 'back', 2, ['NoGame']], ['MidIR', 'back', 1, ['NoGame']]]);
 });
+test('offLineup: the slot is the one his pending games are in, not today\'s — played today in G, IR from tomorrow, is "On IR" and no IR swap (2026-10-21)', () => {
+  const g = (day, time, statusId, status) => Object.assign(game(day, time), { statusId, status });
+  const rows = [
+    prow('Dubois', [g('2026-10-03', 'Sat 7:00PM', '3', 'ir')], { injured: true, flag: 'ir', returnDate: '2026-10-03', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '3', '2026-10-02': '3', '2026-10-03': '3' } }),
+  ];
+  const goalies = [
+    prow('Ullmark', [g('2026-10-01', 'XXX 1<br/>@YYY 5', '1', 'active'), g('2026-10-02', 'Fri 7:00PM', '3', 'ir'), g('2026-10-04', 'Sun 7:00PM', '3', 'ir')],
+      { injured: true, flag: 'dtd', returnDate: '2026-10-02', eligible: ['1', '2', '3'], statusIds: { '2026-10-01': '1', '2026-10-02': '3', '2026-10-03': '3', '2026-10-04': '3' } }),
+  ];
+  const team = { period: P1, statusNames: { '1': 'Active', '2': 'Reserve', '3': 'Inj Res' }, groups: { skaters: { played: 0, max: 52, rows }, goalies: { played: 0, max: 4, rows: goalies } } };
+  const x = T.offLineup(team, NOW_THU_18, { returnDates: true });
+  assert.deepEqual(x.map(T.formatOffLineup), [
+    'On IR, back this period: Dubois Sat 10/3, 1 game, not counted · no IR-eligible player to swap: activating him needs a drop',
+    'On IR, back this period: Ullmark Fri 10/2, 2 games (G), not counted · no IR-eligible player to swap: activating him needs a drop']);
+});
 test('offLineup: cleared means Fantrax no longer allows the slot, not "no injury flag"; a healthy prospect in a Minors slot is not listed', () => {
   const g = (day, time, statusId, status) => Object.assign(game(day, time), { statusId, status });
   const rows = [
