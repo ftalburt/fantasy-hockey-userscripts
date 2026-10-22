@@ -923,7 +923,7 @@ test('loadTeam asks the lineup calls of today and past days for that day\'s game
   const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, { S: { games: { '2026-10-01': 'Thu 4:00PM', '2026-10-03': 'Sat 7:00PM' } } }) }, stats));
   const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_THU_18);   // Thu Oct 1 = lineup day 3
   const st = f.calls.filter(c => c.data.view === 'STATS');
-  assert.deepEqual(st.find(c => c.data.period === '3').data, { leagueId: 'abc', view: 'STATS', period: '3', startDate: '2026-10-01', endDate: '2026-10-01', timeframeTypeCode: 'BY_DATE' });
+  assert.deepEqual(st.find(c => c.data.period === '3').data, { leagueId: 'abc', view: 'STATS', statsType: '1', period: '3', startDate: '2026-10-01', endDate: '2026-10-01', timeframeTypeCode: 'BY_DATE' });
   assert.deepEqual(st.filter(c => c.data.timeframeTypeCode === 'BY_DATE').map(c => [c.data.period, c.data.startDate]), [['1', '2026-09-29'], ['2', '2026-09-30'], ['3', '2026-10-01']], '1.3.6: past days too');
   assert.deepEqual(t.groups.skaters.rows[0].games.map(g => [g.day, g.started]), [['2026-10-01', true], ['2026-10-03', false]]);
 });
@@ -1163,7 +1163,7 @@ test('loadEditExtras: one STATS call for this season (YEAR_TO_DATE, not the peri
   const f = editFetch(editResp(), null);
   const x = await T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, f, 0);
   assert.equal(f.calls.length, 1);
-  assert.deepEqual(f.calls[0], { leagueId: 'abc', view: 'STATS', teamId: 'tMine', timeframeTypeCode: 'YEAR_TO_DATE' });
+  assert.deepEqual(f.calls[0], { leagueId: 'abc', view: 'STATS', statsType: '1', teamId: 'tMine', timeframeTypeCode: 'YEAR_TO_DATE' });
   assert.deepEqual(x, { fpg: { s1: { gp: 10, fpg: 3.5 }, s2: { gp: 0, fpg: null } }, limits: { total: 16, ir: 4, irCountsTowardTotal: false },
     ownTeam: true, daily: true, applyToFuture: true });
 });
@@ -1205,7 +1205,7 @@ test('loadEditExtras: dropped players get their season from the last day they we
   };
   const x = await T.loadEditExtras('abc', DROP_TEAM, { teamId: 'tMine' }, f, 0);
   const today = new Date(), ymd = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
-  assert.deepEqual(calls.find(c => c.period === '6'), { leagueId: 'abc', view: 'STATS', period: '6', startDate: '2026-10-01', endDate: ymd, timeframeTypeCode: 'BY_DATE', teamId: 'tMine' });
+  assert.deepEqual(calls.find(c => c.period === '6'), { leagueId: 'abc', view: 'STATS', statsType: '1', period: '6', startDate: '2026-10-01', endDate: ymd, timeframeTypeCode: 'BY_DATE', teamId: 'tMine' });
   assert.deepEqual(x.fpg, { s1: { gp: 10, fpg: 3.5 }, s2: { gp: 0, fpg: null }, d1: { gp: 5, fpg: 4 }, d2: { gp: 0, fpg: null } }, 'current roster wins; d3 failed');
 });
 test('loadEditExtras: other team, weekly league and missing fields fall back (applyToFuture from the loaded lineups)', async () => {
@@ -1248,7 +1248,7 @@ function assertPayloads(f, req = W_REQ) {
   for (const c of f.dry()) assert.deepEqual(c.data, { rosterLimitPeriod: String(req.n), fantasyTeamId: 'tMine', fieldMap: req.fieldMap, applyToFuturePeriods: req.applyToFuturePeriods, confirm: true });
   for (const c of f.exec()) assert.deepEqual(c.data, { rosterLimitPeriod: String(req.n), fantasyTeamId: 'tMine', fieldMap: req.fieldMap, applyToFuturePeriods: req.applyToFuturePeriods });
   for (const c of f.calls) assert.equal(c.url, '/fxpa/req?leagueId=lg1');
-  for (const c of f.reads()) assert.deepEqual(c.data, { leagueId: 'lg1', view: 'STATS', period: String(req.n), teamId: 'tMine' });
+  for (const c of f.reads()) assert.deepEqual(c.data, { leagueId: 'lg1', view: 'STATS', statsType: '1', period: String(req.n), teamId: 'tMine' });
   assert.ok(f.calls.every(c => ['confirmOrExecuteTeamRosterChanges', 'getTeamRosterInfo'].includes(c.method)), 'no other write');
   assert.ok(f.exec().length <= 1, 'at most one execute per day');
 }

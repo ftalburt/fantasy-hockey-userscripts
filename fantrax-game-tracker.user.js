@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.4
+// @version      1.4.5
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -39,6 +39,8 @@
  *        roster) and on other teams and finished weeks (read-only).
  * 1.4.4: an IR line names the slot his remaining games are in (played today in G, IR from tomorrow read "On ACTIVE"),
  *        and a player already in IR on the returning player's date is no longer offered as his free IR swap.
+ * 1.4.5: the Grid's FP/G · GP is the player's NHL season for every viewer; it followed the viewer's last Fantrax "Stats Type"
+ *        pick, so a viewer on "Fantasy Team" saw only the games each player played for the team.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -1441,6 +1443,9 @@ async function api(leagueId, method, data, fetchImpl) { return (await apiMulti(l
 // (slots, statuses) is unchanged; GP becomes that day's games, and Fantrax adds a totals row (no posId, no scorerId).
 function rosterMsg(leagueId, view, teamId, period, day, date) {
   const d = { leagueId, view };
+  // 2026-10-22: STATS follows the viewer's last "Stats Type" pick unless asked; "2" (Fantasy Team) counts only his games for this team
+  // (a league member saw 0 GP for a reserve goalie with 4 NHL starts). "1" = NHL, the player's real season.
+  if (view === 'STATS') d.statsType = '1';
   if (period !== null && period !== undefined) d.scoringPeriod = String(period);
   if (day !== null && day !== undefined) d.period = String(day);   // a lineup day; wins over scoringPeriod on Fantrax's side
   if (date) Object.assign(d, { startDate: date, endDate: date, timeframeTypeCode: 'BY_DATE' });
