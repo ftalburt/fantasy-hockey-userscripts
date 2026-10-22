@@ -1170,6 +1170,29 @@ test('loadEditExtras: cached per league+team until clearCache; failure rejects a
   await assert.rejects(T.loadEditExtras('abc', { lineups: {} }, { teamId: 'tMine' }, bad, 0));
   assert.equal(n, 4, 'two tries each, nothing cached');
 });
+// 2026-10-21: a player dropped earlier in the week is not in the current roster's STATS; Fantrax gives his season for a past lineup day
+// when that day is asked with a date range (season start → today). One call per day, the last day each missing player was on the roster.
+const DROP_TEAM = { seasonStartDay: '2026-10-01', lineups: {
+  '2026-10-05': { detail: { s1: {}, d1: {}, d3: {} } }, '2026-10-06': { detail: { s1: {}, d1: {}, d2: {} } }, '2026-10-07': { detail: { s1: {}, s2: {} } } } };
+test('missingStatsDays: the last day each player without season numbers was on the roster, grouped by day', () => {
+  assert.deepEqual(T.missingStatsDays(DROP_TEAM, { s1: {}, s2: {} }), [{ day: '2026-10-05', n: 5, ids: ['d3'] }, { day: '2026-10-06', n: 6, ids: ['d1', 'd2'] }]);
+  assert.deepEqual(T.missingStatsDays(DROP_TEAM, { s1: {}, s2: {}, d1: {}, d2: {}, d3: {} }), []);
+  assert.deepEqual(T.missingStatsDays({ lineups: DROP_TEAM.lineups }, {}), [], 'no season start: no day index to ask for');
+});
+test('loadEditExtras: dropped players get their season from the last day they were on the roster; a failed day leaves them out', async () => {
+  T.clearCache();
+  const calls = [], dayRows = { '5': [statsRow('d3', '9.0', '3.00', '3')], '6': [statsRow('s1', '1.0', '1.00', '1'), statsRow('d1', '20.0', '4.00', '5'), statsRow('d2', '-', '-', '0')] };
+  const f = async (url, init) => {
+    const m = JSON.parse(init.body).msgs[0]; calls.push(m.data);
+    if (m.data.period === '5') return { ok: false, status: 502 };
+    const data = m.data.period ? { tables: [{ header: { cells: statsHeader }, rows: dayRows[m.data.period] }] } : editResp();
+    return { ok: true, json: async () => ({ responses: [{ data }] }) };
+  };
+  const x = await T.loadEditExtras('abc', DROP_TEAM, { teamId: 'tMine' }, f, 0);
+  const today = new Date(), ymd = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  assert.deepEqual(calls.find(c => c.period === '6'), { leagueId: 'abc', view: 'STATS', period: '6', startDate: '2026-10-01', endDate: ymd, timeframeTypeCode: 'BY_DATE', teamId: 'tMine' });
+  assert.deepEqual(x.fpg, { s1: { gp: 10, fpg: 3.5 }, s2: { gp: 0, fpg: null }, d1: { gp: 5, fpg: 4 }, d2: { gp: 0, fpg: null } }, 'current roster wins; d3 failed');
+});
 test('loadEditExtras: other team, weekly league and missing fields fall back (applyToFuture from the loaded lineups)', async () => {
   T.clearCache();
   const bare = { tables: [], displayedLists: { periodList: ['Week 1'] }, displayedSelections: { displayedFantasyTeamId: 'tRival' }, myTeamIds: ['tMine'] };

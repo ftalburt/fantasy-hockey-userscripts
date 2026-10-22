@@ -1365,6 +1365,7 @@ test('nameTitle: the player name until the edit extras load, the Fill sentence a
   const m = build(MOCK);
   assert.equal(T.nameTitle(m, 'c1', null), m.players.c1.name);
   assert.equal(T.nameTitle(m, 'c1', {}), T.fpgLong(m, 'c1'));
+  assert.equal(T.nameTitle(Object.assign({}, m, { editable: false }), 'c1', {}), m.players.c1.name + ' · ' + T.fpgText(m, 'c1'), 'not editable: no Fill sentence');
 });
 test('open-slot options carry the IR pair note, shown beside the name · game · FP/G text', () => {
   const MF = build(MOCK_IR_FULL), L = clone(MF.days[4].base), i = MF.days[4].slots.findIndex(x => x.pos === 'D'); L.s[i] = null;
@@ -1428,6 +1429,15 @@ test('autoEditWanted: own team with an editable day, once', () => withPage2(() =
   T.EDIT.editing = true; assert.equal(T.autoEditWanted(T.EDIT), false); T.EDIT.editing = false;
   T.syncEdit(Object.assign({}, ROUTE, { teamId: 'other' }), Object.assign({}, team, { ownTeam: false }), 'K2', now, opts);
   assert.equal(T.autoEditWanted(T.EDIT), false);
+}));
+test('statsWanted: FP/G loads once without editing on another team (2026-10-21), never alongside autoEditWanted', () => withPage2(() => {
+  const { team, now, opts } = mkTeam(MOCK); T.syncEdit(ROUTE, team, 'K1', now, opts);
+  assert.equal(T.statsWanted(T.EDIT), false, 'own team: autoEditWanted loads them');
+  T.syncEdit(Object.assign({}, ROUTE, { teamId: 'other' }), Object.assign({}, team, { ownTeam: false }), 'K2', now, opts);
+  assert.equal(T.statsWanted(T.EDIT), true);
+  T.EDIT.loading = true; assert.equal(T.statsWanted(T.EDIT), false); T.EDIT.loading = false;
+  T.EDIT.loadError = 'x'; assert.equal(T.statsWanted(T.EDIT), false); T.EDIT.loadError = '';
+  T.EDIT.extras = {}; assert.equal(T.statsWanted(T.EDIT), false, 'once');
 }));
 test('editPaused: editable alone does not pause; pending moves or an open choice do', () => withPage2(() => {
   const { team, now, opts } = mkTeam(MOCK); T.syncEdit(ROUTE, team, 'K1', now, opts); T.EDIT.editing = true;

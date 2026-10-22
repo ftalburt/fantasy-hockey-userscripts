@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.2
+// @version      1.4.3
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -16,7 +16,7 @@
  * getTeamRosterInfo calls per team, cached 60 s) → page adapters for /livescoring and /team/roster, driven by a
  * URL-polling router and a MutationObserver. The logic is exported to Node for `node --test`; page start-up only
  * runs when a `document` exists. Read-only up to 1.3.x; since 1.4.0 its one write is the lineup save (saveDay), reached only
- * from Review & save.
+ * from the Week panel's Save button.
  * 1.2.0 adds, on the roster page, a "Week" panel (every lineup slot per period day with that day's game, the bench
  * players who play, open slots and injury tags) and recolours the Schedule - Week cells by each day's real lineup.
  * 1.3.0 adds an opt-in that counts flagged players from Fantrax's expected return date (getPlayerProfile, read-only),
@@ -34,6 +34,9 @@
  *        Fantrax's own confirmOrExecuteTeamRosterChanges (dry run, execute once, re-read); nothing is sent before Save.
  * 1.4.1: Grid starts (click, who sits?, start-all, Fill) seat earlier games in the slots later reserve players can't use, so
  *        the flex stays open for later games (Fantrax locks each player at his puck drop); the Grid's ⋯ menu is gone.
+ * 1.4.2: the Week panel no longer inherits Fantrax's "Team Roster" tooltip; tooltips that repeat what is on screen are gone.
+ * 1.4.3: the Grid's FP/G · GP also for players dropped earlier in the week (their season from the last day they were on the
+ *        roster) and on other teams and finished weeks (read-only).
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -930,7 +933,8 @@ function dockQuestion(M, di, L, sel) {
 // One option of the open-slot picker: "<name> · <game or 'no game'> · <FP/G>"
 const openOption = (M, di, id) => M.players[id].name + ' · ' + (gameLine(M, di, id) || 'no game') + ' · ' + fpgText(M, id);
 // The Grid name cell's tooltip: the Fill sentence once the edit extras are loaded, the player's name before (read-only).
-const nameTitle = (M, id, extras) => extras ? fpgLong(M, id) : M.players[id].name;
+// 2026-10-21: Fill exists only where the panel is editable; elsewhere (another team, a finished week) the name and FP/G.
+const nameTitle = (M, id, extras) => !extras ? M.players[id].name : M.editable ? fpgLong(M, id) : M.players[id].name + ' · ' + fpgText(M, id);
 const OPEN_NONE = 'Nobody on reserve or IR fits it.';
 // Why Fill ranks a player as it does (tooltip on the Grid's name cell).
 function fpgLong(M, id) {
@@ -1653,6 +1657,16 @@ function isDailyLineups(data) {
   const list = data && data.displayedLists && data.displayedLists.periodList;
   return Array.isArray(list) && list.length > 0 && list.every(p => /^\d+ \(\w{3} \w{3} \d{1,2}\)$/.test(String(p)));
 }
+// 2026-10-21: players on this week's lineups who are not in the current roster's STATS (dropped earlier in the week) → the last
+// day each was on the roster, grouped: [{day, n, ids}] in day order. [] without a season start (no day index to ask for).
+function missingStatsDays(team, fpg) {
+  const last = {};
+  if (!team || !team.seasonStartDay) return [];
+  for (const day of Object.keys(team.lineups || {}).sort()) for (const id of Object.keys((team.lineups[day] && team.lineups[day].detail) || {})) if (!(id in fpg)) last[id] = day;
+  const byDay = {};
+  for (const [id, day] of Object.entries(last)) (byDay[day] = byDay[day] || []).push(id);
+  return Object.keys(byDay).sort().map(day => ({ day, n: indexFromDay(team.seasonStartDay, day), ids: byDay[day] }));
+}
 const editCache = new Map();
 // → extras for buildEditModel: one STATS request for this season. timeframeTypeCode YEAR_TO_DATE is required: in season, Fantrax's default
 // for the roster's STATS view is the current period (SEASON_x_BY_PERIOD: 0 GP for everyone at a period's start; found 2026-10-18).
@@ -1665,7 +1679,16 @@ function loadEditExtras(leagueId, team, route, fetchImpl, retryDelay) {
     const a = (await apiMulti(leagueId, [msg], fetchImpl, retryDelay))[0];
     let applyToFuture = a.miscData && typeof a.miscData.applyToFuturePeriods === 'boolean' ? a.miscData.applyToFuturePeriods : null;
     if (applyToFuture === null) for (const d of Object.keys((team && team.lineups) || {}).sort()) { const m = team.lineups[d] && team.lineups[d].misc; if (m && typeof m.applyToFuturePeriods === 'boolean') { applyToFuture = m.applyToFuturePeriods; break; } }
-    return { fpg: parseSeasonStats(a), limits: parseRosterLimits(a), ownTeam: isOwnTeam(a), daily: isDailyLineups(a), applyToFuture: !!applyToFuture };
+    const fpg = parseSeasonStats(a);
+    // Dropped players: a past lineup day asked with a date range (season start → today) lists that day's roster with each player's season
+    // so far (YEAR_TO_DATE there would stop at that day). One request per day, in parallel; a failed day leaves its players without numbers.
+    const today = dayString(new Date());
+    await Promise.all(missingStatsDays(team, fpg).map(async ({ n, ids }) => {
+      const m = rosterMsg(leagueId, 'STATS', route.teamId, null, n); Object.assign(m.data, { startDate: team.seasonStartDay, endDate: today, timeframeTypeCode: 'BY_DATE' });
+      try { const got = parseSeasonStats((await apiMulti(leagueId, [m], fetchImpl, retryDelay))[0]); for (const id of ids) if (got[id]) fpg[id] = got[id]; }
+      catch (e) { console.warn(LOG, 'season stats for dropped players', e); }
+    }));
+    return { fpg, limits: parseRosterLimits(a), ownTeam: isOwnTeam(a), daily: isDailyLineups(a), applyToFuture: !!applyToFuture };
   })();
   editCache.set(key, { at: Date.now(), promise });
   promise.catch(() => { if (editCache.get(key) && editCache.get(key).promise === promise) editCache.delete(key); });
@@ -2328,7 +2351,8 @@ function startEditing() {
   }, err => {
     console.warn(LOG, 'edit extras', err);
     if (EDIT.pkey !== pkey) return;
-    Object.assign(EDIT, { loading: false, loadError: 'Lineup data for editing could not be loaded' }); rerenderWeek();
+    const own = ownTeamState(team, route, OWN_TEAMS[route.leagueId]) === 'own' && editableDays(EDIT.model);
+    Object.assign(EDIT, { loading: false, loadError: own ? 'Lineup data for editing could not be loaded' : 'FP/G this season could not be loaded' }); rerenderWeek();
   });
 }
 function fillDayClick(di) {
@@ -2356,6 +2380,10 @@ function ownTeamState(t, r, own) {
 function autoEditWanted(E) {
   return !!E.team && !!E.route && ownTeamState(E.team, E.route, OWN_TEAMS[E.route.leagueId]) === 'own' && editableDays(E.model) &&
     !E.editing && !E.loading && !E.loadError && !(E.extras && !E.model.editable);
+}
+// 2026-10-21: the Grid's FP/G · GP also on another team and on a week with nothing left to edit: the same extras load once, read-only.
+function statsWanted(E) {
+  return !!E.team && !!E.route && !E.extras && !E.loading && !E.loadError && !autoEditWanted(E);
 }
 function editControl() {
   const M = EDIT.model, t = EDIT.team, r = EDIT.route, st = ownTeamState(t, r, OWN_TEAMS[r.leagueId]);
@@ -2954,7 +2982,7 @@ function renderWeek(root, headline, route, team, key, now, opts, fresh) {
   headline.appendChild(panel);
   restoreScroll(panel, pos);
   armDismiss();
-  if (autoEditWanted(EDIT)) startEditing();   // 2026-10-18: the extras load by themselves on the user's own team
+  if (autoEditWanted(EDIT) || statsWanted(EDIT)) startEditing();   // 2026-10-18: the extras load by themselves (editable on the user's own team only)
   else if (extrasRefreshWanted(EDIT, fresh)) refreshExtras();
 }
 
@@ -3110,7 +3138,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, planChunks, applyDayStatuses, statusLabel, statusShort,
-    compute, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
+    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, reuseSchedule, SCHEDULE_REUSE_MS, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates, parseSeasonStats, parseRosterLimits, ownTeamId, isOwnTeam, isDailyLineups, loadEditExtras, fieldMapFromLineup, interpretResponse, lineupMsg, saveDay, saveAll };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }
