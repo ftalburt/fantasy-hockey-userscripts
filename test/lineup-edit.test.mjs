@@ -1321,11 +1321,6 @@ test('no eligibility data from Fantrax (eligible []) = unknown: no !IR, no IR ba
     assert.equal(T.openOption(MF, 3, 'l3'), 'Ryan Kask · no game · no games yet');
     assert.equal(T.OPEN_NONE, 'Nobody on reserve or IR fits it.');
   });
-  test('fpgLong: the Fill ranking sentence for each case', () => {
-    const m = build(MOCK);
-    assert.equal(T.fpgLong(m, 'c1'), 'Fill ranks him by 3.5 FP/G this season (2 GP).');
-    assert.equal(T.fpgLong(m, 'c4'), 'Fill ranks him last: no games this season.');
-  });
   test('rebuildNote: plural, singular, with and without conflicts', () => {
     assert.equal(T.rebuildNote(3, 0), 'Panel rebuilt with fresh data. 3 pending moves re-applied, none in conflict.');
     assert.equal(T.rebuildNote(1, 2), 'Panel rebuilt with fresh data. 1 pending move re-applied, 2 in conflict.');
@@ -1361,12 +1356,6 @@ test('meterLineups: read-only counts the lineups the body shows (no delta); edit
 });
 
 // ---- mock parity final review fixes
-test('nameTitle: the player name until the edit extras load, the Fill sentence after', () => {
-  const m = build(MOCK);
-  assert.equal(T.nameTitle(m, 'c1', null), m.players.c1.name);
-  assert.equal(T.nameTitle(m, 'c1', {}), T.fpgLong(m, 'c1'));
-  assert.equal(T.nameTitle(Object.assign({}, m, { editable: false }), 'c1', {}), m.players.c1.name + ' · ' + T.fpgText(m, 'c1'), 'not editable: no Fill sentence');
-});
 test('open-slot options carry the IR pair note, shown beside the name · game · FP/G text', () => {
   const MF = build(MOCK_IR_FULL), L = clone(MF.days[4].base), i = MF.days[4].slots.findIndex(x => x.pos === 'D'); L.s[i] = null;
   const o = T.dockOptions(MF, 4, L, { s: { kind: 'slot', i } });

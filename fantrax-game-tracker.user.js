@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.6
+// @version      1.4.7
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -44,6 +44,7 @@
  * 1.4.6: a name in the Grid opens Fantrax's player card (it clicks Fantrax's own link for him in the roster table, found by the
  *        player id in its headshot, or for a rookie without one by name, position and team; players dropped earlier in the
  *        week are not in that table and have no card).
+ * 1.4.7: no tooltip on a Grid name (it was "Fill ranks him by …", which repeated the FP/G · GP beside the name).
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -917,7 +918,7 @@ function moveKind(M, di, L, sel, key) {
   if (after.paired) return { k: m.k, txt: m.txt + pairNote(M, after.paired), pair: pairNote(M, after.paired) };
   return m;
 }
-// ---- 1.4.0 mock parity: the dock list (the Grid's IR chip on a full IR, a +slot chip), the open-slot picker and the Fill sentence (mock.js picker / fpgLong).
+// ---- 1.4.0 mock parity: the dock list (the Grid's IR chip on a full IR, a +slot chip), the open-slot picker (mock.js picker).
 const gameLine = (M, di, id) => { const r = M.players[id] && M.players[id].row, g = r && r.games.find(x => x.day === M.days[di].day); return g ? (g.opp + ' ' + g.time).trim() : ''; };
 const posText = (M, id) => ((M.players[id].row && M.players[id].row.pos) || '').split(',').map(x => x.trim()).filter(Boolean).join('/');
 const DOCK_RANK = { open: 0, swap: 1, shift: 1, take: 1, irswap: 1, bump: 2, bench: 4, ir: 5, blocked: 9 };
@@ -940,9 +941,6 @@ function dockQuestion(M, di, L, sel) {
 }
 // One option of the open-slot picker: "<name> · <game or 'no game'> · <FP/G>"
 const openOption = (M, di, id) => M.players[id].name + ' · ' + (gameLine(M, di, id) || 'no game') + ' · ' + fpgText(M, id);
-// The Grid name cell's tooltip: the Fill sentence once the edit extras are loaded, the player's name before (read-only).
-// 2026-10-21: Fill exists only where the panel is editable; elsewhere (another team, a finished week) the name and FP/G.
-const nameTitle = (M, id, extras) => !extras ? M.players[id].name : M.editable ? fpgLong(M, id) : M.players[id].name + ' · ' + fpgText(M, id);
 // 2026-10-22 (user): a Grid name opens Fantrax's own player card. Fantrax's name links have no href or player id (an Angular
 // click handler), so the Grid clicks Fantrax's link for him in the roster table below it, found by the scorerId in the row's
 // headshot URL (".../headshots/NHL/hs048x9_96_9.png"; all 30 roster rows matched their scorerId, 2026-10-22), since names
@@ -972,11 +970,6 @@ function fantraxNameRows(doc) {
   }).filter(Boolean);
 }
 const OPEN_NONE = 'Nobody on reserve or IR fits it.';
-// Why Fill ranks a player as it does (tooltip on the Grid's name cell).
-function fpgLong(M, id) {
-  const p = M.players[id], v = rankFpg(M, id);
-  return v === null ? 'Fill ranks him last: no games this season.' : 'Fill ranks him by ' + v.toFixed(1) + ' FP/G this season (' + p.gp + ' GP).';
-}
 // After a rebuild that re-applied stored moves: n pending moves, c in conflict.
 const rebuildNote = (n, c) => 'Panel rebuilt with fresh data. ' + n + ' pending move' + (n === 1 ? '' : 's') + ' re-applied' + (c ? ', ' + c + ' in conflict.' : ', none in conflict.');
 // The grid's one click: off IR, to reserve, or start (seat; else swap out a player who is not counted; else ask which one sits).
@@ -2976,7 +2969,8 @@ function buildGridBody(E) {
           : pill.state === 'go' ? click(el('button', { type: 'button', class: 'fgt-all', title: allGamesTip(M, lineups, id), text: 'start +' + pill.n }), () => allGamesClick(id))
           : el('span', { class: 'fgt-all', title: allGamesTip(M, lineups, id), text: 'start +0' }));
       }
-      const who = el('td', { class: 'fgt-who', title: nameTitle(M, id, E.extras) }, [el('div', { class: 'fgt-wr' }, kids)]);
+      // 2026-10-23 (user): no tooltip on the name cell (it was the Fill ranking sentence, then the full name; neither was needed)
+      const who = el('td', { class: 'fgt-who' }, [el('div', { class: 'fgt-wr' }, kids)]);
       body.push(el('tr', {}, [who].concat(M.days.map((d, di) => gridCellNode(E, di, id, lineups, ledger, E.editing && E.sel && E.sel.di === di ? selTargets(M, di, lineups[di], E.sel) : null)))));
     }
   }
@@ -3188,7 +3182,7 @@ function start() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, planChunks, applyDayStatuses, statusLabel, statusShort,
-    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameTitle, nameLinkIn, posTeamKey, headshotId, OPEN_NONE, fpgLong, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
+    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameLinkIn, posTeamKey, headshotId, OPEN_NONE, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, reuseSchedule, SCHEDULE_REUSE_MS, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates, parseSeasonStats, parseRosterLimits, ownTeamId, isOwnTeam, isDailyLineups, loadEditExtras, fieldMapFromLineup, interpretResponse, lineupMsg, saveDay, saveAll };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }
