@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.7
+// @version      1.4.8
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -45,6 +45,8 @@
  *        player id in its headshot, or for a rookie without one by name, position and team; players dropped earlier in the
  *        week are not in that table and have no card).
  * 1.4.7: no tooltip on a Grid name (it was "Fill ranks him by …", which repeated the FP/G · GP beside the name).
+ * 1.4.8: on the roster page the strip, the checkbox and the Week panel come after Fantrax's own alerts (min/max rules
+ *        encountered, Roster Alerts), right above the tab bar; an expanded Week panel had pushed those alerts off screen.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -1793,8 +1795,8 @@ const SEL = {
   matchupRow: 'header.scoring-table__row',   // the row holding the three heads; the 1.3.0 checkbox goes right before the first one
   // Roster page (2026-09-23)
   rosterRoot: 'app-league-team-roster',
-  rosterHeadline: 'app-league-team-roster headline.fx-headline',
-  rosterHeadlineRows: '.fx-headline__rows',
+  rosterMain: 'section.content__main',   // 1.4.8: a flex column: Fantrax's alerts, then the tab bar pane, the tables…
+  rosterTabPane: '.fx-layout__pane--tab-group',
   rosterTables: 'league-team-roster-tables div.i-table',
   rosterHeaderRow: '.i-table__row.i-table__header',
   rosterBody: '.i-table__body',
@@ -3010,20 +3012,17 @@ function buildWeekPanel() {
     kids.push(...body.filter(n => !isLegend(n)));
     kids.push(...body.filter(isLegend));
   }
-  // title '': the panel sits inside Fantrax's <headline title="Team Roster">, whose tooltip every untitled spot in it would inherit
-  return el('div', { class: 'fgt-wk' + (EDIT.saving ? ' fgt-saving' : ''), 'data-fgt': 'week', 'data-fgt-key': EDIT.key, title: '', style: 'flex:1 1 100%;min-width:0' }, kids);
+  // title '': up to 1.4.7 the panel sat inside Fantrax's <headline title="Team Roster">, whose tooltip it would inherit
+  return el('div', { class: 'fgt-wk' + (EDIT.saving ? ' fgt-saving' : ''), 'data-fgt': 'week', 'data-fgt-key': EDIT.key, title: '', style: 'min-width:0' }, kids);
 }
 
-// The headline is a flex row (title block ~900 px + team picker); letting it wrap and giving the panel a 100% basis puts
-// the panel on its own full-width line under both (1068 px on 2026-09-24), the same width as Fantrax's tables.
-function renderWeek(root, headline, route, team, key, now, opts, fresh) {
+function renderWeek(root, host, route, team, key, now, opts, fresh) {
   ensureWeekStyle();
   syncEdit(route, team, key, now, opts, fresh);
   const pos = bodyScroll(root.querySelector('[data-fgt="week"]'));
   removeOwn(root, 'week');
-  headline.style.flexWrap = 'wrap';
   const panel = buildWeekPanel();
-  headline.appendChild(panel);
+  host.appendChild(panel);
   restoreScroll(panel, pos);
   armDismiss();
   if (autoEditWanted(EDIT) || statsWanted(EDIT)) startEditing();   // 2026-10-18: the extras load by themselves (editable on the user's own team only)
@@ -3082,13 +3081,27 @@ function renderCellStatus(team, key, now, opts) {
   }
 }
 
+// 1.4.8: everything the script draws on the roster page sits in one block in the main column, right before Fantrax's tab
+// bar, so Fantrax's own alerts above it ("min/max rules have been encountered", Roster Alerts, an illegal roster) are never
+// pushed down under a tall Week panel. Up to 1.4.7 it sat in the page headline, above them (2026-10-25).
+// The block holds the strip and the checkbox (its first child, `anchor`) and then the Week panel. Each render puts it back
+// in place, so an alert Fantrax adds later still lands above it; moving it keeps its children.
+function rosterHost(root) {
+  const main = root.querySelector(SEL.rosterMain);
+  if (!main) return null;
+  let host = main.querySelector(':scope > [data-fgt="host"]');
+  if (!host) host = el('div', { 'data-fgt': 'host', style: 'display:flex;flex-direction:column;min-width:0' }, [el('div', { 'data-fgt': 'hosttop' })]);
+  const pane = main.querySelector(':scope > ' + SEL.rosterTabPane);
+  if (pane) { if (host.nextElementSibling !== pane) main.insertBefore(host, pane); }
+  else if (host.parentNode !== main) main.insertBefore(host, main.firstChild);
+  return host;
+}
+
 const ROSTER_LOADS = latestGate();
 function renderRoster(route, force, stale) {
-  const headline = document.querySelector(SEL.rosterHeadline), root = document.querySelector(SEL.rosterRoot);
-  if (!headline || !root) return;
-  // The page root is a CSS grid: a sibling inserted after the headline lands at the bottom of the page, so the strip
-  // goes INSIDE the headline's rows block (title + subtitle), which flows normally (seen 2026-09-23).
-  const anchor = headline.querySelector(SEL.rosterHeadlineRows) || headline;
+  const root = document.querySelector(SEL.rosterRoot), host = root && rosterHost(root);
+  if (!host) return;
+  const anchor = host.firstElementChild;
   // ;period=N is a lineup day: once this league's period list is known, map it to its scoring period so the key
   // (and the cache) stay stable while the day arrows move inside one period.
   let period = route.period, day = route.day;
@@ -3119,7 +3132,7 @@ function renderRoster(route, force, stale) {
     if (!stillWanted()) return;
     const now = new Date();
     finishUpdate(root, 'strip', () => { anchor.appendChild(buildTable('strip', key, team, now, opts)); removeOwn(root, 'retctl'); anchor.appendChild(buildReturnControl('roster', key, () => renderRoster(route, true, true))); });
-    renderWeek(root, headline, route, team, key, now, opts, fresh);
+    renderWeek(root, host, route, team, key, now, opts, fresh);
     renderPerDay(team, key, now, opts);
     renderCellStatus(team, key, now, opts);
   }, err => {
