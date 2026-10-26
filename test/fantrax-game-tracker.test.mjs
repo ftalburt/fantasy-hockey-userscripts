@@ -122,6 +122,25 @@ test('compute: over the cap flags the crossing day', () => {
   assert.equal(T.formatStatus(r.status), 'over by 1');
 });
 
+test("compute: Fantrax's max is by day: a day entered at the max scores nothing, a day entered under it scores in full (1.4.9)", () => {
+  const pl = day => Object.assign(at(day, 19, true), { gp: 1 }), rows = (...days) => days.map(d => row('active', [pl(d)]));
+  // 2 + 2, then Thu entered at the max: Thu's game never scored (Fantrax GP still says 5)
+  let r = T.compute({ played: 5, max: 4, rows: rows('2026-09-29', '2026-09-29', '2026-09-30', '2026-09-30', '2026-10-01') }, P1, NOW_THU_18);
+  assert.deepEqual([r.played, r.left], [4, 0]);
+  assert.deepEqual(r.status, { kind: 'ok', over: 0, unused: 0, bench: 0 });
+  // 3, then Wed entered at 3: both Wed games score (5, the league manager subtracts one); Thu entered at 5 scores nothing
+  r = T.compute({ played: 6, max: 4, rows: rows('2026-09-29', '2026-09-29', '2026-09-29', '2026-09-30', '2026-09-30', '2026-10-01') }, P1, NOW_THU_18);
+  assert.equal(r.played, 5);
+  assert.deepEqual(r.status, { kind: 'over', over: 1, unused: 0, bench: 0 });
+  assert.equal(T.formatStatus(r.status), 'over by 1');
+  // at the max with a game still to come: that one is over
+  r = T.compute({ played: 4, max: 4, rows: rows('2026-09-29', '2026-09-29', '2026-09-30', '2026-09-30').concat([row('active', [at('2026-10-03')])]) }, P1, NOW_THU_18);
+  assert.deepEqual([r.played, r.status.kind, r.status.over], [4, 'over', 1]);
+  // a game of a player no longer in the rows (dropped earlier in the week) still counts toward the days before
+  r = T.compute({ played: 5, max: 4, rows: rows('2026-09-30', '2026-09-30', '2026-09-30', '2026-10-01') }, P1, NOW_THU_18);
+  assert.equal(r.played, 4, 'Mon/Tue game missing from the rows: Thu still entered at 4');
+});
+
 test('compute: injured and IR rows never count, bench is capped by the unused room', () => {
   const rows = [row('active', [at('2026-10-02')], true), row('ir', [at('2026-10-02')]), row('active', [at('2026-10-03')]),
     row('reserve', [at('2026-10-02'), at('2026-10-03'), at('2026-10-04')])];

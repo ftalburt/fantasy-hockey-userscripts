@@ -308,6 +308,50 @@ test("gameLedger marks the games past the max in Fantrax's counting order", () =
   assert.equal(led.over.size, 2);
 });
 
+// 1.4.9: the fixture's ledger with no max, split by day: the last played day, the entries before it and that day's entries.
+function lastPlayedDay() {
+  const lineups = M.days.map(d => d.base), all = T.gameLedger(Object.assign({}, M, { max: { skaters: null, goalies: null } }), lineups).skaters;
+  const di = all.filter(e => e.played).pop().di, before = all.filter(e => e.di < di).length, day = all.filter(e => e.di === di);
+  const withMax = max => Object.assign({}, M, { max: { skaters: max, goalies: null } }), key = e => e.di + '|' + e.id;
+  return { lineups, all, di, before, day, withMax, key };
+}
+test("gameLedger: a day entered at the max scores nothing: its played games are left out (dropped), later ones over 'none' (1.4.9)", () => {
+  const { lineups, all, di, before, day, withMax, key } = lastPlayedDay(), N = withMax(before);
+  const playedThere = day.filter(e => e.played);
+  assert.ok(before > 0 && playedThere.length > 0);
+  const led = T.gameLedger(N, lineups);
+  assert.deepEqual([...led.dropped].sort(), playedThere.map(key).sort());
+  assert.equal(led.skaters.length, all.length - playedThere.length);
+  const later = all.filter(e => e.di > di || (e.di === di && !e.played));
+  assert.deepEqual([...led.over].sort(), later.map(key).sort());
+  assert.ok(later.every(e => led.why.get(key(e)) === 'none'));
+  const v = T.meterView(N, lineups, lineups, 'skaters');
+  assert.deepEqual([v.played, v.over], [before, later.length]);
+  const c = T.gridCell(N, lineups, di, playedThere[0].id, led);
+  assert.deepEqual([c.kind, c.dropped, c.over], ['idle', true, false]);
+  assert.equal(T.gridCell(M, lineups, di, playedThere[0].id).kind, 'play');
+  assert.equal(T.dayHeadView(N, lineups, di).games, T.dayHeadView(M, lineups, di).games - playedThere.length);
+});
+test("gameLedger: a day entered under the max scores in full: its games past the max are over 'sub', none dropped (1.4.9)", () => {
+  const { lineups, all, di, before, day, withMax, key } = lastPlayedDay(), N = withMax(before + 1);
+  assert.ok(day.length >= 2, 'the fixture needs 2+ games on its last played day');
+  const led = T.gameLedger(N, lineups);
+  assert.equal(led.dropped.size, 0);
+  assert.equal(led.skaters.length, all.length);
+  day.slice(1).forEach(e => assert.equal(led.why.get(key(e)), 'sub'));
+  all.filter(e => e.di > di).forEach(e => assert.equal(led.why.get(key(e)), 'none'));
+  assert.equal(led.over.size, all.length - before - 1);
+  const c = T.gridCell(N, lineups, di, day[1].id, led);
+  assert.deepEqual([c.kind, c.over, c.dropped], ['play', false, false], 'which games the league manager subtracts is not known: none is marked');
+  const later = all.filter(e => e.di > di).length, dayName = N.days[di].label.split(' ')[0];
+  const v = T.meterView(N, lineups, lineups, 'skaters');
+  assert.equal(v.over, all.length - before - 1);
+  assert.equal(v.why, 'the league manager subtracts ' + (day.length - 1) + ' of ' + dayName + "'s games" + (later ? '; ' + later + " marked over won't count" : ''));
+  const o = T.overList(N, lineups, 'skaters');
+  assert.deepEqual(o.sub, [{ day: dayName, n: day.length - 1 }]);
+  assert.equal(o.names.length, later);
+});
+
 // ---- move planners
 const sl = i => ({ kind: 'slot', i });
 const keys = (di, L, sel, X = M) => [...T.targetsFor(X, di, L, sel)].sort();
@@ -809,7 +853,7 @@ test('dayHref: the day\'s roster page, with the teamId only when the route carri
 test('meterView: played + scheduled = total, delta from the base lineups, over = total - max', () => {
   const base = M.days.map(d => clone(d.base)), led = T.gameLedger(M, base).skaters;
   const v = T.meterView(M, base, base, 'skaters');
-  assert.deepEqual(v, { played: led.filter(e => e.played).length, sched: led.filter(e => !e.played).length, total: led.length, max: 64, delta: 0, over: led.length - 64 });
+  assert.deepEqual(v, { played: led.filter(e => e.played).length, sched: led.filter(e => !e.played).length, total: led.length, max: 64, delta: 0, over: led.length - 64, why: '' });
   assert.ok(v.played > 0 && v.sched > 0 && v.over < 0);
   const sg = T.suggestions(M, base, 3), after = base.slice(); after[3] = sg.L;
   assert.ok(sg.moves.length > 0);
@@ -923,13 +967,13 @@ test('syncEdit: a new pending key under the same render key (period rollover) re
 // ---- Task 12: the grid's cell model and the hover preview
 test('gridCell: kind, slot letter, lock and changed for every state a grid cell can be in', () => {
   const B = M.days.map(d => clone(d.base));
-  assert.deepEqual(T.gridCell(M, B, 3, 'c1'), { kind: 'play', slot: 'C', locked: false, over: false, changed: false, tag: null });
-  assert.deepEqual(T.gridCell(M, B, 6, 'c1'), { kind: 'idle', slot: 'C', locked: false, over: false, changed: false, tag: null });   // active, no game
-  assert.deepEqual(T.gridCell(M, B, 3, 'c4'), { kind: 'idle', slot: 'C', locked: false, over: false, changed: false, tag: null });   // active but Out: his game does not count
+  assert.deepEqual(T.gridCell(M, B, 3, 'c1'), { kind: 'play', slot: 'C', locked: false, over: false, dropped: false, changed: false, tag: null });
+  assert.deepEqual(T.gridCell(M, B, 6, 'c1'), { kind: 'idle', slot: 'C', locked: false, over: false, dropped: false, changed: false, tag: null });   // active, no game
+  assert.deepEqual(T.gridCell(M, B, 3, 'c4'), { kind: 'idle', slot: 'C', locked: false, over: false, dropped: false, changed: false, tag: null });   // active but Out: his game does not count
   assert.equal(T.gridCell(M, B, 0, 'c5').kind, 'benchNo');      // reserve, no game Mon
   assert.equal(T.gridCell(M, B, 3, 'c5').kind, 'benchGame');    // reserve with a game Thu
   assert.equal(T.gridCell(M, B, 3, 'c5').slot, null);
-  assert.deepEqual(T.gridCell(M, B, 0, 'd7'), { kind: 'ir', slot: null, locked: true, over: false, changed: false, tag: null });   // Mon is played
+  assert.deepEqual(T.gridCell(M, B, 0, 'd7'), { kind: 'ir', slot: null, locked: true, over: false, dropped: false, changed: false, tag: null });   // Mon is played
   assert.equal(T.gridCell(M, B, 3, 'd7').kind, 'ir'); assert.equal(T.gridCell(M, B, 3, 'd7').locked, false);
   assert.equal(T.gridCell(M, B, 1, 'r4').kind, 'off');          // not on the roster yet
   assert.equal(T.gridCell(M, B, 2, 'c1').locked, true);         // today, his game started
@@ -959,10 +1003,11 @@ test('gridCell: over = the game is past the games max (ledger), and a passed-in 
   assert.ok(led.over.size >= 1);
   let n = 0;
   for (let di = 0; di < 7; di++) for (const id of M3.order) {
-    const c = T.gridCell(M3, B, di, id); assert.equal(c.over, led.over.has(di + '|' + id)); if (c.over) { n++; assert.equal(c.kind, 'play'); }
+    const k = di + '|' + id, c = T.gridCell(M3, B, di, id);
+    assert.equal(c.over, led.over.has(k) && led.why.get(k) !== 'sub', '1.4.9: the games the league manager subtracts are not marked'); if (c.over) { n++; assert.equal(c.kind, 'play'); }
   }
-  assert.equal(n, led.over.size);
-  assert.equal(T.gridCell(M3, B, 3, 'c1', { over: new Set(['3|c1']) }).over, true);
+  assert.equal(n, [...led.over].filter(k => led.why.get(k) !== 'sub').length);
+  assert.equal(T.gridCell(M3, B, 3, 'c1', { over: new Set(['3|c1']), dropped: new Set() }).over, true);
 });
 
 test('previewDiff: what one click changes in that day, the clicked player marked self', () => {
