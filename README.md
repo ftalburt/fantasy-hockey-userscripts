@@ -11,18 +11,19 @@ going over it or leave games unused, and lets you set your lineup for the whole 
   lineup is set to play (**Sched**), and what reserve players could add (**Potential**). A verdict says what to do:
   red "over by N" (bench someone or lose the games), amber "N unused, bench covers…" (start reserve players on the
   right days), green "on track".
-- **Team Roster:** the same table under the page title, on every tab. On **Schedule - Week**, two rows under each
+- **Team Roster:** the same table above Fantrax's roster, on every tab (on a phone, under the Week panel). On **Schedule - Week**, two rows under each
   group show active games per day and the running total, with the day you would go over in red. Each cell is tinted
   green when that player is in your lineup that day, and red and struck through when he is active but out.
 - **Week panel** (Team Roster): the whole scoring period at a glance, as **Columns** (one per day) or a **Grid** (one
-  row per player). Each slot shows the player, opponent and start time, **empty** when he has no game, **open** when
-  nobody is in it, and tags for **OUT / IR / SUSP** (not counted) and **DTD / MINORS** (still counted). Games that go
+  row per player). Each slot shows the player, opponent and start time (once the game has started, his fantasy points
+  instead, with a red dot while it is live), **empty** when he has no game, **open** when nobody is in it, and tags for **OUT / IR / SUSP** (not counted) and **DTD / MINORS** (still counted). Games that go
   past the max are marked **over**. A meter at the top shows played + scheduled against the max. Click a day's ↗ to
   open that day on Fantrax. The **Week** link collapses the panel.
 - **Players on IR:** a player in an IR slot who is due back this period gets a line under the table saying who could
   take his IR spot, or that bringing him back needs a drop.
-- **Expected return dates** (off by default): tick "Count players from their Fantrax expected return date" to count an
-  injured player from the date in his Fantrax injury report. Numbers that change turn violet, with a line saying why,
+- **Expected return dates** (off by default): turn on the **↩ Return dates** chip in the Week panel's header (on
+  Matchups, tick "Count players from their Fantrax expected return date") to count an injured player from the date in
+  his Fantrax injury report. Numbers that change turn violet, with a line saying why,
   and a `RET` tag marks those days in the Week panel. Fantrax's dates are often placeholders, so treat this as a
   second opinion.
 
@@ -52,6 +53,13 @@ Fantrax until you press **Save**.
   already started are skipped. Warnings (going past the games max, starting an Out player) don't block a save.
 
 Other teams' panels show the same view, read-only.
+
+### On a phone
+
+The Matchups tables stack in one block above Fantrax's scores, so the opponent's column stays in reach. The Week panel
+opens in the Grid on today, showing as many whole days as fit the screen (one day per swipe), and also works with the
+phone on its side. **📌 Pinned | Page** chooses how it scrolls: Pinned keeps the day headers in view and snaps to whole
+rows; Page shows the whole panel and lets the page scroll. Tap anything greyed out or locked to see why.
 
 Install: Tampermonkey → open the [raw file](https://raw.githubusercontent.com/ftalburt/fantasy-hockey-userscripts/master/fantrax-game-tracker.user.js)
 → Install. Updates arrive automatically. It runs on Fantrax league pages only (never the draft room), needs no special

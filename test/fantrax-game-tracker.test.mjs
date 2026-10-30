@@ -1455,3 +1455,102 @@ test('renderPerDay: a table with no day columns drops stale perday rows', () => 
   } finally { if (prev === undefined) delete globalThis.document; else globalThis.document = prev; }
   assert.deepEqual(body.children.map(c => c.textContent), ['A. Player']);
 });
+
+// ---- 1.5.0 (phones): the strip and the matchup tables take a narrow layout when their column is too narrow
+const fakeTable = (scrollWidth, right) => ({ scrollWidth, getBoundingClientRect: () => ({ right }), replaceWith(n) { this.replacedBy = n; } });
+test("tooWide: wider than its column, or past the viewport's right edge", () => {
+  assert.equal(T.tooWide(fakeTable(378, 392), { clientWidth: 378 }, 393), false);
+  assert.equal(T.tooWide(fakeTable(397, 411), { clientWidth: 378 }, 393), true);
+  assert.equal(T.tooWide(fakeTable(397, 411), { clientWidth: 420 }, 393), true);   // the anchor grew with its content
+  assert.equal(T.tooWide(fakeTable(471, 485), { clientWidth: 173 }, 1687), true);
+  assert.equal(T.tooWide(fakeTable(471, 900), { clientWidth: 700 }, 1687), false);
+});
+test('fitTable: keeps a table that fits, swaps in the rebuild when it is too wide', () => {
+  const prev = globalThis.document;
+  globalThis.document = { documentElement: { clientWidth: 393 } };
+  try {
+    const ok = fakeTable(378, 392), rebuilt = { narrow: true };
+    assert.equal(T.fitTable(ok, { clientWidth: 378 }, () => rebuilt), ok);
+    assert.equal(ok.replacedBy, undefined);
+    const wide = fakeTable(397, 411);
+    assert.equal(T.fitTable(wide, { clientWidth: 378 }, () => rebuilt), rebuilt);
+    assert.equal(wide.replacedBy, rebuilt);
+  } finally { if (prev === undefined) delete globalThis.document; else globalThis.document = prev; }
+});
+test("matchupNeedsBlock: block when any team's table is wider than its column", () => {
+  assert.equal(T.matchupNeedsBlock([173, 173], [471, 471]), true);
+  assert.equal(T.matchupNeedsBlock([700, 700], [471, 471]), false);
+  assert.equal(T.matchupNeedsBlock([700, 173], [471, 471]), true);
+  assert.equal(T.matchupNeedsBlock([471, 471], [471, 471]), false);   // desktop: the head grows with its table
+  assert.equal(T.matchupNeedsBlock([173, 173], [null, null]), false);  // nothing landed yet
+});
+test("matchupNeedsBlock: block when a team's column grew with its table past the screen's right edge", () => {
+  // 393 px phone frame, 2026-10-28: the narrow tables made Fantrax's heads grow to 306 each; the page was 626 wide
+  assert.equal(T.matchupNeedsBlock([306, 306], [306, 306], [320, 626], 393), true);
+  assert.equal(T.matchupNeedsBlock([471, 471], [471, 471], [740, 1230], 1687), false);
+});
+test("teamScope: a team's nodes live in its block slot once the block exists, else in its head", () => {
+  const head = { name: 'head' }, slot = { name: 'slot' };
+  let asked = '';
+  const doc = sel => ({ querySelector: q => { asked = q; return sel; } });
+  assert.equal(T.teamScope(doc(slot), head, 't1'), slot);
+  assert.equal(asked, '[data-fgt="mblock"] [data-fgt-team="t1"]');
+  assert.equal(T.teamScope(doc(null), head, 't1'), head);
+});
+test('refreshOnShow: refresh after 2 minutes away or a new day, not after a quick app switch', () => {
+  const t = new Date(2026, 9, 28, 21, 0, 0);
+  assert.equal(T.refreshOnShow(t, new Date(t.getTime() + 30000)), false);
+  assert.equal(T.refreshOnShow(t, new Date(t.getTime() + 120000)), true);
+  assert.equal(T.refreshOnShow(new Date(2026, 9, 28, 23, 59, 50), new Date(2026, 9, 29, 0, 0, 10)), true);
+  assert.equal(T.refreshOnShow(null, t), true);
+  assert.equal(T.REFRESH_HIDDEN_MS, 120000);
+});
+test('blockHoldsTeams: an existing block is reused only when it has a slot for every team on the page', () => {
+  assert.equal(T.blockHoldsTeams(['a', 'b'], ['a', 'b']), true);
+  assert.equal(T.blockHoldsTeams(['a', 'b'], ['c', 'd']), false);   // another matchup, same period
+  assert.equal(T.blockHoldsTeams(['a', 'b'], ['a', 'c']), false);
+});
+
+test('teamOfRow: the row\'s team, else the one team in all his scored games (a dropped player\'s row has none)', () => {
+  const games = (...c) => c.map(x => T.parseGameText(x));
+  assert.equal(T.teamOfRow({ team: 'CHI', games: [] }), 'CHI');
+  assert.equal(T.teamOfRow({ team: '', games: games('TOR 2<br/>@CGY 5 F', '@BOS<br/>Sat 7:00PM', 'CGY 0<br/>@EDM 4 F') }), 'CGY');
+  assert.equal(T.teamOfRow({ team: '', games: games('CGY 0<br/>@EDM 4 F') }), '');   // one game: either side
+  assert.equal(T.teamOfRow(null), '');
+});
+
+test('parseDayLineup reads the day\'s fantasy points (FPts) next to GP; applyDayStatuses keeps them on a started game only', () => {
+  const data = { tables: [{ scGroup: '2010', header: { cells: [{ key: 'rankPosOv', shortName: 'Rk' }, { key: 'opponent', shortName: 'Opp' }, { key: 'fpts', shortName: 'FPts' }, { shortName: 'GP' }] },
+    rows: [{ posId: '203', statusId: '1', scorer: { scorerId: 'G1', name: 'Morgan Geekie' }, cells: [{ content: '1' }, { content: 'BOS 4<br/>@ANA 2 F' }, { content: '6.01' }, { content: '1' }] },
+      { posId: '206', statusId: '1', scorer: { scorerId: 'H1', name: 'Bo Horvat' }, cells: [{ content: '2' }, { content: '' }, { content: '0' }, { content: '0' }] },
+      { posId: '206', statusId: '1', scorer: { scorerId: 'E1', name: 'Empty' }, cells: [{ content: '' }, { content: '' }, { content: '' }, { content: '' }] }] }] };
+  const l = T.parseDayLineup(data);
+  assert.deepEqual(l.fp, { G1: 6.01, H1: 0 });
+  assert.deepEqual(l.gp, { G1: 1, H1: 0 });
+  const rows = [{ id: 'G1', games: [{ day: '2026-10-29', opp: 'BOS 4', time: '@ANA 2 F' }] }, { id: 'H1', games: [{ day: '2026-10-29', opp: '@MIN', time: '7:00PM' }] }];
+  const out = T.applyDayStatuses(rows, { '2026-10-29': { G1: 'active', H1: 'active' } }, undefined, { '2026-10-29': l.gp }, { '2026-10-29': l.fp });
+  assert.equal(out[0].games[0].fp, 6.01);
+  assert.equal(out[1].games[0].fp, undefined);   // no game started: no points shown
+});
+
+test('fpGameText: a started game as opponent and fantasy points (opponent alone without points); null without his team or a score', () => {
+  const g = (content, fp) => Object.assign(T.parseGameText(content), fp === undefined ? {} : { fp });
+  assert.equal(T.fpGameText(g('BOS 4<br/>@ANA 2 F', 6.01), { team: 'BOS' }), '@ANA 6.01 FP');
+  assert.equal(T.fpGameText(g('CHI 1<br/>@DET 1', -1.26), { team: 'DET' }), 'CHI -1.26 FP');   // live; a goalie can go negative
+  assert.equal(T.fpGameText(g('CHI 1<br/>@DET 1', -0.004), { team: 'DET' }), 'CHI 0.00 FP');   // never \"-0.00\"
+  assert.equal(T.fpGameText(g('TOR 2<br/>@CGY 5 F', 3), { team: '', games: [g('TOR 2<br/>@CGY 5 F'), g('CGY 0<br/>@EDM 4 F')] }), 'TOR 3.00 FP');   // dropped: team from his games
+  assert.equal(T.fpGameText(g('BOS 4<br/>@ANA 2 F'), { team: 'BOS' }), '@ANA');     // no points (a reserve or IR game): the opponent alone
+  assert.equal(T.fpGameText(g('@BOS<br/>Sat 12:00PM', 0), { team: 'CHI' }), null);  // not a score
+  assert.equal(T.fpGameText(g('CHI 1<br/>@DET 1', 2), { team: 'TOR' }), null);
+});
+
+test('isLive: started (a score) and no final mark yet', () => {
+  const g = (content, fp) => Object.assign(T.parseGameText(content), fp === undefined ? {} : { fp });
+  assert.equal(T.isLive(g('CHI 1<br/>@DET 1', 2.5)), true);
+  assert.equal(T.isLive(g('BOS 4<br/>@ANA 2 F', 6.01)), false);
+  assert.equal(T.isLive(g('FLA 3<br/>@CAR 2 F/OT', 1)), false);
+  assert.equal(T.isLive(g('FLA 3<br/>@CAR 2 F/SO', 1)), false);
+  assert.equal(T.isLive(g('CHI 1<br/>@DET 1')), true);    // a reserve game under way (no points) is live too
+  assert.equal(T.isLive(g('@BOS<br/>Sat 12:00PM')), false);   // not started
+  assert.equal(T.isLive(null), false);
+});

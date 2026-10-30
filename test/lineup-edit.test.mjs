@@ -1495,12 +1495,15 @@ test('save bar only with something to save or show; pending bar only before the 
 
 // ---- 2026-10-18: an unclosed @media in WEEK_CSS (cd65feb) put every later rule (targets, dim, chips, dock) behind hover:none
 test('WEEK_CSS: braces balance, so no rule is swallowed by an unclosed block', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
-  let d = 0, worst = 0;
-  for (const line of css.split('\n')) { for (const c of line) d += c === '{' ? 1 : c === '}' ? -1 : 0; if (!/^\s*@media/.test(line)) worst = Math.max(worst, d); }
+  const css = T.WEEK_CSS;
+  let d = 0;
+  const count = (line, ch) => line.split(ch).length - 1;
+  for (const line of css.split('\n')) {
+    d += count(line, '{') - count(line, '}');
+    // a plain rule line closes what it opens (a block line, @media / @container, may open one; a lone "}" closes one)
+    if (!/^\s*@(media|container)/.test(line) && line.trim() !== '}') assert.equal(count(line, '{'), count(line, '}'), 'a plain rule line left a block open: ' + line);
+  }
   assert.equal(d, 0);
-  assert.ok(worst <= 1, 'a plain rule line left a block open');
 });
 
 // ---- 2026-10-18 usability pass, Task 4: who sits = the lit cells
@@ -1539,8 +1542,7 @@ test('syncEdit: a refresh (tab return, resize, in-flight tick) keeps an open who
   T.syncEdit(ROUTE, team, 'K1', now, opts, true); assert.equal(T.EDIT.sel, null);
 }));
 test('WEEK_CSS: sticky Grid day headers stay opaque on today and played days (rows scroll under them)', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   const rules = css.split('}').map(r => r.split('{')).filter(r => r.length === 2).map(([sel, body]) => ({ sel, body }));
   assert.ok(!rules.some(r => r.sel.split(',').some(x => /th\.fgt-past\s*$/.test(x)) && /opacity/.test(r.body)), 'a played day header must not be see-through (dim its contents instead)');
   const today = rules.filter(r => /th\.fgt-today/.test(r.sel) && /background\s*:/.test(r.body));
@@ -1555,8 +1557,7 @@ test('allGamesPill: "none" (no pill) when he has no remaining game that counts; 
   assert.deepEqual(T.allGamesPill(M, ls, 'c1'), { state: 'done', n: 0 });   // starts Wed-Sat, every game he has
 });
 test('WEEK_CSS: the Grid IR chip is a corner badge that takes no room from the game text', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   assert.ok(!/\.fgt-hasirb \.fgt-cell\{[^}]*padding-right/.test(css), 'no padding reserved for the IR chip');
 });
 
@@ -1600,8 +1601,7 @@ test('startEditing: a load still in flight when the week changes never lands on 
   } finally { globalThis.fetch = realFetch; delete globalThis.sessionStorage; delete globalThis.location; Object.assign(T.EDIT, { key: null, pkey: null, editing: false, undo: [], loading: false, loadError: '', extras: null }); T.clearCache(); }
 });
 test('WEEK_CSS: "over" is a tag in the cell (no corner ::after to collide with ⋯ or "sits"); Columns today accent on its sticky header', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   assert.ok(!/\.fgt-cell\.fgt-ovr::after/.test(css));
   assert.ok(/\.fgt-col\.fgt-today \.fgt-dh\{[^}]*box-shadow/.test(css));
 });
@@ -1620,16 +1620,14 @@ test('legendSpec: both views explain the same tags (status, RET, NEW/DROP, over,
   }
 });
 test('WEEK_CSS: Grid cell tags keep their size (the game text ellipsizes instead); IR badge inside the cell; headers top-aligned', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   assert.match(css, /\.fgt-cell\.fgt-gx\{[^}]*display:flex/);
   assert.match(css, /\.fgt-cell\.fgt-gx \.fgt-gt\{[^}]*min-width:0[^}]*text-overflow:ellipsis/);
   assert.match(css, /\.fgt-c\.fgt-hasirb \.fgt-irb\{[^}]*top:3px/);
   assert.match(css, /\.fgt-grid thead th\{[^}]*vertical-align:top/);
 });
 test('WEEK_CSS: Grid day label on its own line, so "played"/"today" and Fill sit under it on every day', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   assert.match(css, /\.fgt-grid \.fgt-dl>a,\.fgt-grid \.fgt-dl>b\{[^}]*flex-basis:100%/);
 });
 
@@ -1677,14 +1675,13 @@ test('saveLabel: "Save" with nothing to save, "Save 1 day" / "Save N days" other
 
 // ---- 2026-10-18 user: Grid should use the room it has (1: less horizontal scroll, 2: less vertical scroll, 3: fill the panel)
 test('WEEK_CSS: the Grid fills the body, its day columns share the width down to 92 px, and a wide panel puts each name on one line', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   assert.match(css, /\.fgt-wkbody\{[^}]*container-type:inline-size/);
   assert.match(css, /\.fgt-grid\{[^}]*table-layout:fixed[^}]*width:100%[^}]*min-width:calc\(var\(--fgt-name\) \+ var\(--fgt-days\) \* 92px\)/);
   assert.ok(!/td\.fgt-c\{[^}]*width:118px/.test(css), 'no fixed day width');
   assert.match(css, /@container \(min-width:960px\)\{[^@]*--fgt-name:230px[^@]*\.fgt-grid \.fgt-who \.fgt-p\{[^}]*display:inline/);
   assert.match(css, /@container \(min-width:1200px\)\{[^@]*--fgt-name:240px[^@]*flex-basis:auto/);
-  assert.match(src, /'--fgt-days:' \+ M\.days\.length/);
+  assert.match((await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8'), /'--fgt-days:' \+ M\.days\.length/);
 });
 
 // ---- 2026-10-18 user: no message for a plain move (the grid shows it); one only when something else happened
@@ -1705,8 +1702,7 @@ test('autoDismissMs: move messages 8 s; a save that fully worked 10 s; a day not
   assert.equal(T.autoDismissMs('results', [{ status: 'failed' }]), null);
 });
 test('WEEK_CSS: the meter is not pinned to the page (it covered the grid\'s own sticky header); a cell with a tag keeps room for the IR badge', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../fantrax-game-tracker.user.js', import.meta.url), 'utf8');
-  const a = src.indexOf('const WEEK_CSS = `') + 'const WEEK_CSS = `'.length, css = src.slice(a, src.indexOf('`;', a));
+  const css = T.WEEK_CSS;
   assert.ok(!/\.fgt-meter\{[^}]*position:sticky/.test(css));
   assert.match(css, /\.fgt-c\.fgt-hasirb \.fgt-cell:has\(\.fgt-tag\)\{[^}]*padding-right/);
   assert.match(css, /\.fgt-x\{/);
@@ -1833,4 +1829,196 @@ test('headshotId: the scorerId in Fantrax\'s headshot URL', () => {
   assert.equal(T.headshotId('url("https://fantraximg.com/si/headshots/NHL/hs048x9_96_9.png")'), '048x9');
   assert.equal(T.headshotId('url("https://fantraximg.com/assets/images/icons/player-news/player-news--recent.png")'), null);
   assert.equal(T.headshotId(''), null);
+});
+
+// ---- 1.5.0 (phones)
+const weekCss = async () => T.WEEK_CSS;   // 1.5.0: the evaluated CSS (the phone blocks are interpolated)
+// the body of the first `header{ ... }` block, braces balanced
+const cssBlock = (css, header) => { const i = css.indexOf(header + '{'); if (i < 0) return null; let d = 0;
+  for (let j = i + header.length; j < css.length; j++) { if (css[j] === '{') d++; else if (css[j] === '}' && --d === 0) return css.slice(i + header.length + 1, j); } return null; };
+test('defaultWeekView: a stored choice wins; with none, narrow screens get Grid', () => {
+  assert.equal(T.defaultWeekView(null, 393), 'grid');
+  assert.equal(T.defaultWeekView(null, 1687), 'columns');
+  assert.equal(T.defaultWeekView('columns', 393), 'columns');
+  assert.equal(T.defaultWeekView('grid', 1687), 'grid');
+  assert.equal(T.defaultWeekView(null, undefined), 'columns');
+});
+test('WEEK_CSS: phone layout lives in a 560px container query', async () => {
+  const b = cssBlock(await weekCss(), '@container (max-width:560px)');
+  assert.ok(b, 'no @container (max-width:560px) block');
+  assert.match(b, /\.fgt-grid\{--fgt-name:104px/);
+  assert.ok(b.includes('min-width:calc(var(--fgt-name) + var(--fgt-days) * (100cqw - var(--fgt-name)) / var(--fgt-gshow, 3))'));   // as many whole days as fit (daysShown)
+  assert.match(b, /\.fgt-grid thead th:not\(\.fgt-whoh\)\{scroll-snap-align:none start;scroll-snap-stop:always\}/);
+  assert.match(cssBlock(await weekCss(), '@media (max-width:560px)') || '', /\.fgt-wkbody:has\(\.fgt-grid\)\{scroll-padding-left:104px\}/);   // Grid only: Columns snaps at 0
+  assert.match(b, /\.fgt-grid thead \.fgt-opens\{display:none\}/);
+  assert.match(b, /\.fgt-grid \.fgt-cell\.fgt-gx\{[^}]*white-space:normal/);
+  assert.doesNotMatch(b, /overflow-wrap:anywhere|word-break:break-all/);   // phone 2026-10-28: "@CO / L 3", "gam / e": wrap at spaces only
+  assert.ok(b.includes('.fgt-cols{grid-auto-columns:calc((100cqw - 16px) / var(--fgt-cshow, 1))}'));
+  assert.match(cssBlock(await weekCss(), '@media (max-width:560px)') || '', /\.fgt-wkbody\{[^}]*scroll-snap-type:x mandatory/);   // on the scroller itself
+  assert.match(b, /\.fgt-col\{[^}]*scroll-snap-align:start;scroll-snap-stop:always/);
+  assert.match(b, /\.fgt-dc\{[^}]*white-space:normal/);
+});
+test('WEEK_CSS: on a phone the panel keeps its own scroll unless Page is chosen (Pinned | Page, Forrest 2026-10-29)', async () => {
+  const css = await weekCss(), b = cssBlock(css, '@media (max-width:560px)');
+  assert.ok(b, 'no @media (max-width:560px) block');
+  assert.deepEqual(b.match(/[^{}]*\{[^}]*max-height:none/g).map(r => r.split('{')[0].trim()), ['.fgt-pagescroll .fgt-wkbody,.fgt-pagescroll .fgt-dock']);   // only under Page
+  assert.match(b, /\.fgt-wkhead \.fgt-scrollseg\{display:inline-flex\}/);
+  assert.ok(css.includes('.fgt-scrollseg{display:none}'));   // no control on desktop
+  assert.ok(css.includes('.fgt-wkbody{border-top:1px solid #2c3140;overflow:auto;max-height:max(320px,calc(100vh - 190px))'));
+});
+test('WEEK_CSS: touch sizes only under (pointer:coarse)', async () => {
+  const css = await weekCss(), b = cssBlock(css, '@media (pointer:coarse)');
+  assert.ok(b, 'no @media (pointer:coarse) block');
+  // "✓ all" is a label (a span), not a target: only the "start +N" button gets the tap size (phone 2026-10-28: rows twice as tall)
+  assert.ok(!b.split('}').some(r => /min-height:32px/.test(r) && r.split('{')[0].split(',').map(x => x.trim()).includes('.fgt-all')));
+  for (const sel of ['.fgt-cell', '.fgt-cols .fgt-pl', '.fgt-btn', '.fgt-seg button', '.fgt-chip', 'button.fgt-all', '.fgt-minifill', '.fgt-x', '.fgt-wkhead a']) {
+    const rule = b.split('}').find(r => r.split('{')[0].split(',').map(x => x.trim()).includes(sel));
+    assert.ok(rule && /min-height:32px/.test(rule), sel + ' has no min-height:32px');
+  }
+  assert.match(b, /\.fgt-c\.fgt-hasirb \.fgt-irb\{[^}]*width:20px[^}]*height:20px/);
+  assert.match(css, /\n\.fgt-cell\{[^}]*min-height:22px/);
+  assert.match(css, /\n\.fgt-cols \.fgt-pl\{height:20px/);
+});
+test('todayScrollLeft: today flush after the names; no today -> start', () => {
+  const cols = [132, 224, 316, 408].map(left => ({ left }));
+  assert.equal(T.todayScrollLeft(cols, 2), 184);
+  assert.equal(T.todayScrollLeft(cols, -1), 0);
+  assert.equal(T.todayScrollLeft(cols, 0), 0);
+});
+test('tapReason: blocked choice shows its why; read-only shows the tip; past shows the tip only when not counted', () => {
+  assert.equal(T.tapReason('blocked', { why: 'Roster full (26/26): needs a drop' }), 'Roster full (26/26): needs a drop.');
+  assert.equal(T.tapReason('readonly', { tip: 'NYI 4 @NSH 7:00PM · In C' }), 'NYI 4 @NSH 7:00PM · In C');
+  assert.equal(T.tapReason('past', { dropped: true, tip: "NYI · past the games max: Fantrax didn't count it" }), "NYI · past the games max: Fantrax didn't count it");
+  assert.equal(T.tapReason('past', { dropped: false, tip: 'NYI 4 @NSH' }), '');
+  assert.equal(T.tapReason('startAll', { tip: 'Starts 0 more: no game left' }), 'Starts 0 more: no game left');
+});
+test('touchUI: false without matchMedia, follows (hover:none)', () => {
+  const prev = globalThis.matchMedia;
+  try {
+    delete globalThis.matchMedia; assert.equal(T.touchUI(), false);
+    globalThis.matchMedia = q => ({ matches: q === '(hover:none)' }); assert.equal(T.touchUI(), true);
+    globalThis.matchMedia = () => ({ matches: false }); assert.equal(T.touchUI(), false);
+  } finally { if (prev === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = prev; }
+});
+test('dock: a blocked choice under touch says why and its tap does not move', () => {
+  const Z = build(MOCK), nobody = clone(Z.days[4].base);
+  Z.days[4].rows.l3.eligible = ['1', '2']; Z.days[4].rows.c4.eligible = ['1', '2']; Z.days[4].rows.d7.eligible = ['1', '2', '3'];
+  const sel = { di: 4, key: 'i:d7', s: { kind: 'ir', id: 'd7' } }, o = T.dockOptions(Z, 4, nobody, sel).find(x => x.k === 'blocked');
+  assert.ok(o, 'this state offers a blocked choice');
+  const saved = { model: T.EDIT.model, lineups: T.EDIT.lineups, sel: T.EDIT.sel, toast: T.EDIT.toast, saving: T.EDIT.saving };
+  try {
+    Object.assign(T.EDIT, { model: Z, lineups: Z.days.map((d, i) => i === 4 ? nobody : clone(d.base)), sel, toast: '', saving: false });
+    const before = JSON.stringify(T.EDIT.lineups);
+    T.dockOptionTap(4, o);
+    assert.equal(JSON.stringify(T.EDIT.lineups), before);
+    assert.equal(T.EDIT.toast, o.why + '.');
+  } finally { Object.assign(T.EDIT, saved); }
+});
+test('afterWeekRender: on touch a new message line comes into view (the Grid is a page long on a phone); not with a mouse, not for the same text', () => {
+  const prevMM = globalThis.matchMedia, saved = { pkey: T.EDIT.pkey, view: T.EDIT.view, scrolledFor: T.EDIT.scrolledFor };
+  const mkPanel = text => { const toast = { textContent: text, scrolled: 0, scrollIntoView() { this.scrolled++; } };
+    return { toast, querySelector: q => q === '.fgt-toast' ? (text ? toast : null) : null }; };
+  try {
+    globalThis.matchMedia = q => ({ matches: q === '(hover:none)' });
+    let p = mkPanel('Locked: his game started.'); T.afterWeekRender(p, false, ''); assert.equal(p.toast.scrolled, 1);
+    p = mkPanel('Locked: his game started.'); T.afterWeekRender(p, false, 'Locked: his game started.'); assert.equal(p.toast.scrolled, 0);
+    globalThis.matchMedia = () => ({ matches: false });
+    p = mkPanel('Locked: his game started.'); T.afterWeekRender(p, false, ''); assert.equal(p.toast.scrolled, 0);
+  } finally { if (prevMM === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = prevMM; Object.assign(T.EDIT, saved); }
+});
+
+test('weekScrollChoice: Pinned unless Page was chosen', () => {
+  const store = {}; globalThis.localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); } };
+  try {
+    assert.equal(T.weekScrollChoice(), 'panel');
+    store['fgt-week-scroll'] = 'page'; assert.equal(T.weekScrollChoice(), 'page');
+    store['fgt-week-scroll'] = 'junk'; assert.equal(T.weekScrollChoice(), 'panel');
+  } finally { delete globalThis.localStorage; }
+});
+
+test('keptScroll: collapsing and reopening keeps the day (same team, period and view); another view or period does not', () => {
+  const saved = { pkey: T.EDIT.pkey, view: T.EDIT.view, keptScroll: T.EDIT.keptScroll };
+  const panel = (x, y) => ({ querySelector: q => q === '.fgt-wkbody' ? { scrollLeft: x, scrollTop: y } : null }), collapsed = { querySelector: () => null };
+  try {
+    Object.assign(T.EDIT, { pkey: 'L|T|5', view: 'grid', keptScroll: null });
+    assert.equal(T.keptScroll(collapsed), null);   // first render after a reload: nothing kept, the phone opens on today
+    assert.deepEqual(T.keptScroll(panel(258, 40)), { x: 258, y: 40 });   // collapsing: the open panel's offsets are kept
+    assert.deepEqual(T.keptScroll(collapsed), { x: 258, y: 40 });        // still collapsed (a refresh): kept
+    T.EDIT.view = 'columns'; assert.equal(T.keptScroll(collapsed), null);
+    T.EDIT.view = 'grid'; T.EDIT.pkey = 'L|T|6'; assert.equal(T.keptScroll(collapsed), null);
+  } finally { Object.assign(T.EDIT, saved); }
+});
+
+test('snapDelta: the row (day) nearest the pinned edge comes to it; not at the start, not past the end', () => {
+  assert.equal(T.snapDelta([60, 98, 136], 80, 200, 900), 18);    // 98 is nearest: scroll down 18
+  assert.equal(T.snapDelta([70, 108], 80, 200, 900), -10);       // 70 is nearest: scroll back 10
+  assert.equal(T.snapDelta([79.5, 118], 80, 200, 900), 0);       // already there
+  assert.equal(T.snapDelta([60, 98], 80, 0, 900), 0);            // at the top
+  assert.equal(T.snapDelta([60, 98], 80, 890, 900), 0);          // would pass the end
+  assert.equal(T.snapDelta([], 80, 200, 900), 0);
+});
+
+test('snapDelta: a half-snapped day comes to the name column (phone 2026-10-29: Wed half hidden, Thu 58 px in)', () => {
+  const days = [104 - 144.75, 104 - 58.375, 104 + 28, 104 + 114.375];   // Wed half behind the names, Thu 28 px in
+  assert.equal(T.snapDelta(days, 104, 230, 345.5), 28);
+});
+
+test('snapDelta: at the very bottom it does not pull back up (the next swipe scrolls the page; Forrest 2026-10-29)', () => {
+  assert.equal(T.snapDelta([60, 98], 80, 900, 900), 0);      // at the end, the nearest row (60) is above the edge: stays
+  assert.equal(T.snapDelta([60, 98], 80, 899.5, 900), 0);    // within a pixel of the end
+  assert.equal(T.snapDelta([60, 98], 80, 850, 900), 18);     // short of the end: snaps as before
+});
+
+test('badgeOverlap: the text a corner badge hides, in px (over about two characters, the cell gets room under it)', () => {
+  const badge = { left: 60, right: 90, top: 20, bottom: 30 };
+  assert.equal(T.badgeOverlap([{ left: 10, right: 85, top: 18, bottom: 32, width: 75 }], badge), 25);   // "STL 12:00p" under SUSP: 25 px hidden
+  assert.equal(T.badgeOverlap([{ left: 10, right: 66, top: 18, bottom: 32, width: 56 }], badge), 6);    // just the last letter
+  assert.equal(T.badgeOverlap([{ left: 10, right: 85, top: 2, bottom: 16, width: 75 }], badge), 0);     // the line above it
+  assert.equal(T.badgeOverlap([{ left: 70, right: 70, top: 18, bottom: 32, width: 0 }], badge), 0);
+});
+
+test('WEEK_CSS: a phone on its side gets the phone layout; the lock is a corner mark in the phone layout (Forrest 2026-10-29)', () => {
+  const css = T.WEEK_CSS, narrow = cssBlock(css, '@container (max-width:560px)'), land = cssBlock(css, '@media ' + T.PHONE_LANDSCAPE_MQ);
+  assert.match(narrow, /\.fgt-grid \.fgt-cell\.fgt-gx \.fgt-lk\{position:absolute/);
+  assert.ok(land, 'no landscape block');
+  const lb = cssBlock(land, '@container (min-width:561px)');
+  assert.ok(lb.includes(narrow.trim().split('\n')[0]), 'the narrow body rules again');
+  assert.match(land, /\.fgt-wkbody\{scroll-snap-type:x mandatory\}/);   // and the viewport rules (snap, Pinned | Page, strip below)
+});
+test('phoneLayout: a narrow body, or a phone on its side', () => {
+  const prev = globalThis.matchMedia;
+  try {
+    globalThis.matchMedia = () => ({ matches: false });
+    assert.equal(T.phoneLayout({ clientWidth: 363 }), true);
+    assert.equal(T.phoneLayout({ clientWidth: 694 }), false);
+    globalThis.matchMedia = q => ({ matches: q === T.PHONE_LANDSCAPE_MQ });
+    assert.equal(T.phoneLayout({ clientWidth: 694 }), true);
+  } finally { if (prev === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = prev; }
+});
+
+test('daysShown: as many whole days as fit, at least one, at most the week (Forrest 2026-10-29: never a fixed count)', () => {
+  assert.equal(T.daysShown(331 - 104, 75, 7), 3);    // 360 px phone, Grid
+  assert.equal(T.daysShown(382 - 104, 75, 7), 3);    // 412 px
+  assert.equal(T.daysShown(694 - 104, 75, 7), 7);    // on its side: the whole week
+  assert.equal(T.daysShown(363 - 16, 220, 7), 1);    // Columns, upright
+  assert.equal(T.daysShown(694 - 16, 220, 7), 3);    // Columns, on its side
+  assert.equal(T.daysShown(100, 220, 7), 1);
+  assert.equal(T.daysShown(5000, 75, 4), 4);         // a short period
+});
+
+test('restoreScroll: the day count is set before the kept offsets (phone 2026-10-29: today moved a day left on each redraw)', () => {
+  const saved = { model: T.EDIT.model, shownWidth: T.EDIT.shownWidth, scrolledFor: T.EDIT.scrolledFor }, prev = globalThis.matchMedia;
+  try {
+    globalThis.matchMedia = () => ({ matches: false });
+    const order = [], body = { clientWidth: 422, style: { setProperty: (k, v) => order.push(k + '=' + v) } };
+    Object.defineProperty(body, 'scrollLeft', { set: v => order.push('x=' + v) });
+    Object.defineProperty(body, 'scrollTop', { set: v => order.push('y=' + v) });
+    Object.assign(T.EDIT, { model: { days: new Array(7) }, shownWidth: 422 });
+    T.restoreScroll({ querySelector: () => body }, { x: 159, y: 0 });
+    assert.deepEqual(order, ['--fgt-gshow=4', '--fgt-cshow=1', 'x=159', 'y=0']);
+    order.length = 0; T.EDIT.shownWidth = 381;   // the width changed (turned): back to the first day, today's scroll follows
+    T.restoreScroll({ querySelector: () => body }, { x: 159, y: 40 });
+    assert.deepEqual(order, ['--fgt-gshow=4', '--fgt-cshow=1', 'x=0', 'y=40']);
+    assert.equal(T.EDIT.scrolledFor, null);
+  } finally { if (prev === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = prev; Object.assign(T.EDIT, saved); }
 });

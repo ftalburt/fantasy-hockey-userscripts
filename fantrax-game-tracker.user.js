@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.4.9
+// @version      1.5.0
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -52,6 +52,15 @@
  *        on start times Fantrax doesn't keep, so no game is marked); a day entered at or over the max scores nothing: its
  *        played games read like any active game that didn't count (hatched, struck) and leave the strip and meter counts,
  *        which had shown e.g. 6 / 4 "over by 2" for a team Fantrax scored 4 for; its scheduled games stay red "over".
+ * 1.5.0: phones: the matchup page no longer pushes the opponent off-screen (the tables move to one block when a team's
+ *        column is too narrow); the strip's status takes its own line when it doesn't fit, and on the roster page the strip
+ *        goes under the Week panel. The Week panel gets a phone layout, also for a phone on its side: Grid by default,
+ *        opening on today, as many whole days as fit (one per swipe), two-line rows, corner badges and lock, touch-size
+ *        targets, and a "Pinned | Page" choice (the panel scrolls by itself with the day headers pinned and rows snapping,
+ *        or the page scrolls). A tap shows the reasons a hover would. Everywhere: a game that has started shows the player's
+ *        fantasy points ("@DET 6.75 FP", a red dot while it is live; a reserve or IR game shows the opponent only) instead
+ *        of the score; on the roster page the return-date setting is a "Return dates" chip in the Week panel's header;
+ *        returning to the tab re-pulls only after 2 minutes away or on a new day.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -246,16 +255,19 @@ function parseDayStatuses(data) {
 // posIds he may take, flex included), posIds / posIdsNoFlex / defaultPosId, secondary and disabled (scorer.disableLineupChange);
 // misc = top-level miscData: {applyToFuturePeriods: boolean|null, illegalText: string|null, statusTotals (raw, null when absent)}.
 function parseDayLineup(data) {
-  const names = Object.assign({}, POS_FALLBACK), slots = [], statuses = {}, statusNames = {}, detail = {}, gp = {};
+  const names = Object.assign({}, POS_FALLBACK), slots = [], statuses = {}, statusNames = {}, detail = {}, gp = {}, fp = {};
   const tables = data.tables || [];
-  for (const table of tables) {
-    const i = ((table.header && table.header.cells) || []).findIndex(c => c && (c.shortName || c.name) === 'GP');
+  // GP, and (1.5.0) the fantasy points: on a one-day STATS answer both are that day's
+  const column = (out, is) => { for (const table of tables) {
+    const i = ((table.header && table.header.cells) || []).findIndex(c => c && is(c));
     if (i < 0) continue;
     for (const row of table.rows || []) {
-      const sc = row.scorer, n = Number(row.cells && row.cells[i] && row.cells[i].content);
-      if (sc && sc.scorerId && Number.isFinite(n)) gp[sc.scorerId] = n;
+      const sc = row.scorer, cell = row.cells && row.cells[i], n = cell && cell.content !== '' ? Number(cell.content) : NaN;
+      if (sc && sc.scorerId && Number.isFinite(n)) out[sc.scorerId] = n;
     }
-  }
+  } };
+  column(gp, c => (c.shortName || c.name) === 'GP');
+  column(fp, c => c.key === 'fpts' || c.shortName === 'FPts');
   for (const table of tables) for (const st of table.statusTotals || []) if (st && st.id !== undefined && st.name) statusNames[String(st.id)] = String(st.name);
   for (const table of tables) for (const row of table.rows || []) {
     const sc = row.scorer;
@@ -283,7 +295,7 @@ function parseDayLineup(data) {
   }
   const mm = data.miscData || {};
   const misc = { applyToFuturePeriods: typeof mm.applyToFuturePeriods === 'boolean' ? mm.applyToFuturePeriods : null, illegalText: mm.illegalRosterMsgsText ? String(mm.illegalRosterMsgsText) : null, statusTotals: Array.isArray(mm.statusTotals) ? mm.statusTotals : null };
-  return { slots, statuses, statusNames, detail, gp, misc };
+  return { slots, statuses, statusNames, detail, gp, fp, misc };
 }
 // 1.3.1: the label of a roster status and its short form for tags / line prefixes ("Inj Res" → "IR", "Minors" → "MINORS").
 function statusLabel(statusNames, statusId) { return (statusNames && statusNames[String(statusId)]) || 'off-lineup'; }
@@ -297,12 +309,15 @@ function statusShort(name) {
 // unknown) and the row gets `eligible` from the latest day that lists him ([] if none).
 // gpByDay (1.3.5, optional): {day: {scorerId: games that day}} — GP ≥ 1 marks the game started. It is the number
 // Fantrax's Played is summed from (the two matched exactly on 2026-09-30), so a game leaves Sched as it enters Played.
-function applyDayStatuses(rows, statusByDay, detailByDay, gpByDay) {
+// fpByDay (1.5.0, optional): {day: {scorerId: that day's fantasy points}}, kept on a started game as `fp`.
+function applyDayStatuses(rows, statusByDay, detailByDay, gpByDay, fpByDay) {
   return rows.map(row => {
     const games = row.games.map(g => {
       const day = statusByDay[g.day], out = Object.assign({}, g, { status: (day && day[row.id]) || 'ir' });
       const gp = gpByDay && gpByDay[g.day] && gpByDay[g.day][row.id];
       if (gp >= 1) out.started = true;
+      const fp = fpByDay && fpByDay[g.day] && fpByDay[g.day][row.id];
+      if (gp >= 1 && typeof fp === 'number') out.fp = fp;
       if (typeof gp === 'number') out.gp = gp;   // 1.3.6: that day's games for him, as Fantrax counts them into Played
       if (detailByDay) { const d = detailByDay[g.day] && detailByDay[g.day][row.id]; out.statusId = d ? d.statusId : null; }
       return out;
@@ -959,7 +974,7 @@ function moveKind(M, di, L, sel, key) {
   return m;
 }
 // ---- 1.4.0 mock parity: the dock list (the Grid's IR chip on a full IR, a +slot chip), the open-slot picker (mock.js picker).
-const gameLine = (M, di, id) => { const r = M.players[id] && M.players[id].row, g = r && r.games.find(x => x.day === M.days[di].day); return g ? (g.opp + ' ' + g.time).trim() : ''; };
+const gameLine = (M, di, id) => { const r = M.players[id] && M.players[id].row, g = r && r.games.find(x => x.day === M.days[di].day); const t = g && fpGameText(g, r); return g ? (t ? t + (isLive(g) ? ' (live)' : '') : (g.opp + ' ' + g.time).trim()) : ''; };
 const posText = (M, id) => ((M.players[id].row && M.players[id].row.pos) || '').split(',').map(x => x.trim()).filter(Boolean).join('/');
 const DOCK_RANK = { open: 0, swap: 1, shift: 1, take: 1, irswap: 1, bump: 2, bench: 4, ir: 5, blocked: 9 };
 // The options of the dock list, ranked: open 0, swap/shift/take/irswap 1, bump (not playing) 2, bump (plays) 3, bench 4, ir 5, blocked last.
@@ -1605,11 +1620,11 @@ async function loadTeam(leagueId, { teamId, period, day, profiles }, fetchImpl, 
     if (ids.length) loadReturnTexts(leagueId, ids, fetchImpl, retryDelay);
   }, () => {});
   let [full, ...dayData] = await Promise.all([fullAsked].concat(statsAsked));
-  const statusByDay = {}, detailByDay = {}, gpByDay = {}, lineups = {}, statusNames = {};
+  const statusByDay = {}, detailByDay = {}, gpByDay = {}, fpByDay = {}, lineups = {}, statusNames = {};
   dayData.forEach((d, i) => {
     const day = lineupDays[i], l = parseDayLineup(d);
     lineups[day] = l; statusByDay[day] = l.statuses; detailByDay[day] = l.detail; Object.assign(statusNames, l.statusNames);
-    if (day <= today) gpByDay[day] = l.gp;                           // a later day's GP column is the season's, not the day's
+    if (day <= today) { gpByDay[day] = l.gp; fpByDay[day] = l.fp; }   // a later day's GP and FPts columns are the season's, not the day's
   });
   const rosterKey = lineupDays.map(d => d + ':' + Object.keys(statusByDay[d] || {}).sort().join(',')).join('|');
   if (reuse && reuse.rosterKey !== rosterKey) {   // the roster changed since those answers: every reused one is asked again
@@ -1633,8 +1648,8 @@ async function loadTeam(leagueId, { teamId, period, day, profiles }, fetchImpl, 
   for (const group of ['skaters', 'goalies']) for (const r of rows[group]) r.games.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
   return { teamId: g.teamId, teamName: g.teamName, ownTeam: g.ownTeam, period: p, seasonStartDay: start, lineups, statusNames,
     schedule, rosterKey, scheduleAt: reuse ? reuse.at : fetchedAt, groups: {
-    skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay, detailByDay, gpByDay) },
-    goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay, detailByDay, gpByDay) },
+    skaters: { played: g.played.skaters, max: g.max.skaters, rows: applyDayStatuses(rows.skaters, statusByDay, detailByDay, gpByDay, fpByDay) },
+    goalies: { played: g.played.goalies, max: g.max.goalies, rows: applyDayStatuses(rows.goalies, statusByDay, detailByDay, gpByDay, fpByDay) },
   } };
 }
 
@@ -1875,6 +1890,21 @@ function marker(kind, key, text, onRetry) {
 
 function numCell(v, extraStyle) { return el('td', { style: 'padding:1px 6px;text-align:right;' + (extraStyle || ''), text: v === null ? '–' : String(v) }); }
 
+// 1.5.0 (phones): a touch screen has no hover, so where a tooltip holds a reason found nowhere else on screen, a tap shows it:
+// in the Week panel in its message line (EDIT.toast), elsewhere inline after the name. With a mouse nothing changes.
+function touchUI() { return typeof matchMedia === 'function' && matchMedia('(hover:none)').matches; }
+function tapReason(kind, ctx) { return kind === 'blocked' ? ctx.why + '.' : kind === 'past' ? (ctx.dropped ? ctx.tip : '') : ctx.tip; }
+function toastTap(node, text) { if (touchUI() && text) click(node, () => { Object.assign(EDIT, { toast: text, sel: null, pick: null }); rerenderWeek(); }); return node; }
+function revealTap(span, text) {
+  if (touchUI() && text) span.addEventListener('click', e => {
+    e.preventDefault();
+    const n = span.nextSibling;
+    if (n && n.nodeType === 1 && n.getAttribute('data-fgt') === 'tipline') n.remove();
+    else span.insertAdjacentElement('afterend', el('span', { 'data-fgt': 'tipline', style: 'color:#9ca3af', text: ' — ' + text }));
+  });
+  return span;
+}
+
 // The two-row Played / Max / Left / Sched / Potential / status table used on both pages.
 // 1.3.0: with the return-date option on, Sched / Potential cells that differ from the flag-only reading turn violet and
 // a footer lists every flagged player by effect (gained / lost / no change), each name carrying Fantrax's text on hover.
@@ -1888,7 +1918,8 @@ function buildEffectLines(team, now) {
     x[group].forEach((e, i) => {
       if (i) kids.push(' · ');
       const row = [].concat(team.groups.skaters.rows, team.groups.goalies.rows).find(r => r.id === e.id);
-      kids.push(el('span', { title: (row && row.returnText) || (row && row.tag && row.tag.tip) || '', text: formatEffect(e) }));
+      const tip = (row && row.returnText) || (row && row.tag && row.tag.tip) || '';
+      kids.push(revealTap(el('span', { title: tip, text: formatEffect(e) }), tip));
     });
     lines.push(el('div', { style: 'color:' + color, 'data-fgt-line': group }, kids));
   }
@@ -1900,28 +1931,39 @@ function buildOffLines(team, now, opts) {
   const rows = [].concat(team.groups.skaters.rows, team.groups.goalies.rows);
   const all = offLineup(team, now, opts);
   return all.map(e => {
-    const row = rows.find(r => r.id === e.id), text = formatOffLineup(e, all), i = text.indexOf(e.name);
-    const kids = i >= 0 ? [text.slice(0, i), el('span', { title: (row && row.returnText) || (row && row.tag && row.tag.tip) || '', text: e.name }), text.slice(i + e.name.length)] : [text];
+    const row = rows.find(r => r.id === e.id), text = formatOffLineup(e, all), i = text.indexOf(e.name), tip = (row && row.returnText) || (row && row.tag && row.tag.tip) || '';
+    const kids = i >= 0 ? [text.slice(0, i), revealTap(el('span', { title: tip, text: e.name }), tip), text.slice(i + e.name.length)] : [text];
     return el('div', { style: 'color:' + OFF_COLOR, 'data-fgt-line': 'off' }, kids);
   });
 }
-function buildTable(kind, key, team, now, opts) {
-  const on = !!(opts && opts.returnDates);
+// 1.5.0 (phones): narrow = the status leaves its column for a line of its own under each group row (colspan 6)
+function buildTable(kind, key, team, now, opts, narrow = false) {
+  const on = !!(opts && opts.returnDates), cols = narrow ? 6 : 7;
   const head = el('tr', { style: 'color:' + COLORS.muted }, [el('th', { style: 'text-align:left;padding:1px 6px;font-weight:normal;white-space:nowrap', text: team.period.start.slice(5) + ' – ' + team.period.end.slice(5) })]
-    .concat(['Played', 'Max', 'Left', 'Sched', 'Potential', ''].map(h => el('th', { style: 'padding:1px 6px;text-align:right;font-weight:normal', text: h }))));
-  const rows = ['skaters', 'goalies'].map(g => {
+    .concat(['Played', 'Max', 'Left', 'Sched', 'Potential'].concat(narrow ? [] : ['']).map(h => el('th', { style: 'padding:1px 6px;text-align:right;font-weight:normal', text: h }))));
+  const rows = ['skaters', 'goalies'].flatMap(g => {
     const r = compute(team.groups[g], team.period, now, opts);
     const base = on ? compute(team.groups[g], team.period, now) : r;
     const color = statusColor(r.status);
     const tint = (v, b) => on && v !== b ? 'color:' + RET_COLOR : '';
-    return el('tr', {}, [el('td', { style: 'padding:1px 6px;text-align:left', text: g === 'skaters' ? 'Skaters' : 'Goalies' }),
-      numCell(r.played), numCell(r.max), numCell(r.left), numCell(r.scheduled, tint(r.scheduled, base.scheduled)), numCell(r.potential, tint(r.potential, base.potential)),
-      el('td', { style: 'padding:1px 6px;text-align:left;white-space:nowrap;color:' + color, text: formatStatus(r.status) })]);
+    const nums = [el('td', { style: 'padding:1px 6px;text-align:left', text: g === 'skaters' ? 'Skaters' : 'Goalies' }),
+      numCell(r.played), numCell(r.max), numCell(r.left), numCell(r.scheduled, tint(r.scheduled, base.scheduled)), numCell(r.potential, tint(r.potential, base.potential))];
+    if (narrow) return [el('tr', {}, nums), el('tr', {}, [el('td', { colspan: '6', style: 'padding:0 6px 3px;text-align:left;white-space:normal;color:' + color, text: formatStatus(r.status) })])];
+    return [el('tr', {}, nums.concat([el('td', { style: 'padding:1px 6px;text-align:left;white-space:nowrap;color:' + color, text: formatStatus(r.status) })]))];
   });
   const parts = [head].concat(rows);
   const lines = (on ? buildEffectLines(team, now) : []).concat(buildOffLines(team, now, opts));
-  if (lines.length) parts.push(el('tr', {}, [el('td', { colspan: '7', style: 'padding:3px 6px 1px;font:11px/1.5 sans-serif;white-space:normal;text-align:left' }, lines)]));
+  if (lines.length) parts.push(el('tr', {}, [el('td', { colspan: String(cols), style: 'padding:3px 6px 1px;font:11px/1.5 sans-serif;white-space:normal;text-align:left' }, lines)]));
   return el('table', { 'data-fgt': kind, 'data-fgt-key': key, style: 'font:12px/1.4 sans-serif;border-collapse:collapse;margin:4px 0;color:#e5e7eb' }, parts);
+}
+
+// 1.5.0 (phones): too wide = wider than the column it sits in, or past the viewport's right edge; fitTable swaps in the narrow build.
+function tooWide(table, column, viewportWidth) {
+  return table.scrollWidth > column.clientWidth + 1 || table.getBoundingClientRect().right > viewportWidth + 1;
+}
+function fitTable(table, column, rebuild) {
+  if (!tooWide(table, column, document.documentElement.clientWidth)) return table;
+  const n = rebuild(); table.replaceWith(n); return n;
 }
 
 function removeOwn(container, kind) { for (const n of container.querySelectorAll('[data-fgt="' + kind + '"]')) n.remove(); }
@@ -1954,6 +1996,36 @@ function teamIdFromHead(head) {
   return m ? m[1] : null;
 }
 
+// 1.5.0 (phones): Fantrax's phone layout gives each team a column too narrow for our table (173 px vs 471, 2026-10-28), which
+// widened the page and pushed the opponent off-screen. Then both teams' tables go into one full-width block before the first
+// scoring row (after the checkbox), one slot per team in head order, and from then on a team's nodes live in its slot.
+// too wide for its column, or (a column that grew with its table: 306 px heads on a 393 px phone, 2026-10-28) past the screen's right edge
+function matchupNeedsBlock(headWidths, tableWidths, tableRights = [], viewportWidth = Infinity) {
+  return tableWidths.some((w, i) => w !== null && (w > headWidths[i] + 1 || tableRights[i] > viewportWidth + 1));
+}
+// an existing block is reused only when it holds a slot for every team on the page (another matchup in the same period: rebuild)
+function blockHoldsTeams(slotTeamIds, headTeamIds) { return headTeamIds.every(t => slotTeamIds.includes(t)); }
+function teamScope(doc, head, teamId) { return doc.querySelector('[data-fgt="mblock"] [data-fgt-team="' + teamId + '"]') || head; }
+function placeMatchups(blockKey) {
+  const heads = Array.from(document.querySelectorAll(SEL.matchupHeads)).filter(h => teamIdFromHead(h)), firstRow = document.querySelector(SEL.matchupRow);
+  if (!heads.length || !firstRow) return 'inline';
+  const moveIn = () => { for (const h of heads) { const slot = teamScope(document, h, teamIdFromHead(h)); if (slot !== h) for (const n of h.querySelectorAll('[data-fgt="matchup"]')) slot.appendChild(n); } };
+  const old = document.querySelector('[data-fgt="mblock"][data-fgt-key="' + blockKey + '"]');
+  if (old && blockHoldsTeams(Array.from(old.querySelectorAll('[data-fgt-team]')).map(n => n.getAttribute('data-fgt-team')), heads.map(teamIdFromHead))) { moveIn(); return 'block'; }
+  if (old) old.remove();
+  const tables = heads.map(h => h.querySelector('table[data-fgt="matchup"]'));
+  if (!matchupNeedsBlock(heads.map(h => h.clientWidth), tables.map(t => t ? t.scrollWidth : null), tables.map(t => t ? t.getBoundingClientRect().right : 0), document.documentElement.clientWidth)) return 'inline';
+  for (const n of document.querySelectorAll('[data-fgt="mblock"]')) n.remove();
+  // before Fantrax's scoring table, not inside it: it is a CSS table (display:table), where our block became a cell of its first
+  // column and widened every row to fit our table (458 px on a 393 px phone, 2026-10-28)
+  (firstRow.closest('.scoring-table') || firstRow).insertAdjacentElement('beforebegin', el('div', { 'data-fgt': 'mblock', 'data-fgt-key': blockKey, style: 'margin:4px 0 8px' }, heads.map(h => {
+    const a = h.querySelector(SEL.matchupName);
+    return el('div', { 'data-fgt-team': teamIdFromHead(h), style: 'margin:6px 0' }, [el('div', { style: 'font:600 13px/1.4 sans-serif;color:#e5e7eb', text: a ? a.textContent.trim() : '' })]);
+  })));
+  moveIn();
+  return 'block';
+}
+
 function renderMatchups(route, force, stale) {
   const heads = Array.from(document.querySelectorAll(SEL.matchupHeads));
   const ctlKey = route.leagueId + '|' + (route.period === null ? 'cur' : route.period);
@@ -1962,21 +2034,28 @@ function renderMatchups(route, force, stale) {
     for (const n of document.querySelectorAll('[data-fgt="retctl"]')) n.remove();
     firstRow.insertAdjacentElement('beforebegin', buildReturnControl('matchups', ctlKey, () => renderMatchups(route, true, true)));
   }
+  for (const n of document.querySelectorAll('[data-fgt="mblock"]')) if (n.getAttribute('data-fgt-key') !== ctlKey) n.remove();
   for (const head of heads) {
     const teamId = teamIdFromHead(head), block = head.querySelector(SEL.matchupBlock);
     if (!teamId || !block) continue;
     const key = teamId + '|' + (route.period === null ? 'cur' : route.period);
-    const own = ownNodes(head, 'matchup');
+    // the team's own nodes: in its head, or in its slot of the full-width block (1.5.0)
+    const scope = () => teamScope(document, head, teamId), put = (sc, n) => sc === head ? block.insertAdjacentElement('afterend', n) : sc.appendChild(n);
+    const own = ownNodes(scope(), 'matchup');
     if (!shouldRender(own.table || own.marker, key, force)) continue;
-    beginUpdate(head, 'matchup', key, n => block.insertAdjacentElement('afterend', n));
-    const stillWanted = () => head.isConnected && block.isConnected && isCurrent(ownNodes(head, 'matchup').marker, key);
+    beginUpdate(scope(), 'matchup', key, n => put(scope(), n));
+    const stillWanted = () => head.isConnected && block.isConnected && isCurrent(ownNodes(scope(), 'matchup').marker, key);
     cachedLoadTeam(route.leagueId, { teamId, period: route.period, day: null, profiles: returnDatesOn() }, undefined, undefined, undefined, stale).then(withDates(route.leagueId)).then(({ team, opts }) => {
       if (!stillWanted()) return;
-      finishUpdate(head, 'matchup', () => block.insertAdjacentElement('afterend', buildTable('matchup', key, team, new Date(), opts)));
+      const now = new Date(), sc = scope();
+      finishUpdate(sc, 'matchup', () => fitTable(put(sc, buildTable('matchup', key, team, now, opts)), sc, () => buildTable('matchup', key, team, now, opts, true)));
+      placeMatchups(ctlKey);
     }, err => {
       console.warn(LOG, 'matchups', teamId, err);
       if (!stillWanted()) return;
-      finishUpdate(head, 'matchup', () => block.insertAdjacentElement('afterend', marker('matchup', key, 'unavailable', () => renderMatchups(route, true))));
+      const sc = scope();
+      finishUpdate(sc, 'matchup', () => put(sc, marker('matchup', key, 'unavailable', () => renderMatchups(route, true))));
+      placeMatchups(ctlKey);
     });
   }
 }
@@ -2036,6 +2115,53 @@ function renderPerDay(team, key, now, opts) {
 
 // ---- the week panel (1.2.0): every lineup slot per period day, with that day's game, plus the bench players who play
 
+// 1.5.0: the phone layout, used at a narrow panel body (container query) and on a phone on its side (PHONE_LANDSCAPE_MQ).
+const PHONE_LANDSCAPE_MQ = '(pointer:coarse) and (orientation:landscape) and (max-height:500px)';
+const PHONE_BODY_CSS = `/* 2026-10-29 (Forrest): whole days only: as many days as fit at GRID_DAY_MIN share what the name column leaves (--fgt-gshow, set by
+   afterWeekRender from the width), and each day header snaps to the name column's edge (scroll-padding on the body) */
+.fgt-grid{--fgt-name:104px;min-width:calc(var(--fgt-name) + var(--fgt-days) * (100cqw - var(--fgt-name)) / var(--fgt-gshow, 3))}
+.fgt-grid thead th:not(.fgt-whoh){scroll-snap-align:none start;scroll-snap-stop:always}
+.fgt-grid .fgt-cell.fgt-gx{white-space:normal}
+.fgt-grid .fgt-cell.fgt-gx .fgt-gt{white-space:normal;text-overflow:clip}
+.fgt-dc{white-space:normal}
+.fgt-cols .fgt-dh{height:auto}
+.fgt-cols{grid-auto-columns:calc((100cqw - 16px) / var(--fgt-cshow, 1))}
+/* 2026-10-29 (Forrest): no +slot chips in a narrow Grid head (they pushed the rows down; a selected player's dock lists the open slots first) */
+.fgt-grid thead .fgt-opens{display:none}
+/* 2026-10-29 (Forrest): two lines per row. Name, then "C · 6.3" with the pill at its end ("✓" / "+2"; the GP count goes); the
+   pill's tap area reaches past it without adding height. */
+.fgt-grid .fgt-who .fgt-wr{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:4px;row-gap:0}
+.fgt-grid .fgt-who .fgt-wn{display:contents}
+.fgt-grid .fgt-who .fgt-wl{grid-column:1/-1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fgt-grid .fgt-who .fgt-gpn,.fgt-grid .fgt-pw{display:none}
+.fgt-grid .fgt-who .fgt-p{display:flex;min-width:0}
+.fgt-grid .fgt-who .fgt-pp{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.fgt-grid .fgt-who .fgt-pval{flex:none;white-space:pre}
+.fgt-grid .fgt-cell.fgt-gx .fgt-gt.fgt-gtfp{flex-wrap:wrap}
+/* the opponent never shortens; the FP unit goes only in a cell it would clip (fitCells: "21.85 FI" at 393 px, fine on a wider phone) */
+.fgt-grid .fgt-gtfp .fgt-opp{flex:none}
+.fgt-grid .fgt-cell.fgt-gx{padding-left:3px;padding-right:3px}
+.fgt-grid .fgt-cell.fgt-gx.fgt-tagpad{padding-bottom:11px}
+.fgt-grid .fgt-who .fgt-all{min-height:0;line-height:14px;padding:0 6px;position:relative}
+.fgt-grid .fgt-who button.fgt-all::after{content:"";position:absolute;inset:-9px -4px}
+.fgt-grid .fgt-cell .fgt-tags{position:absolute;right:2px;bottom:1px;display:flex;gap:2px}
+.fgt-grid .fgt-cell .fgt-tags .fgt-tag{font-size:8px;line-height:10px;padding:0 2px;margin:0}
+/* scroll-snap-stop: one day per swipe, however fast (Forrest 2026-10-29: a flick skipped days by accident) */
+.fgt-col{scroll-snap-align:start;scroll-snap-stop:always}
+/* 2026-10-29 (Forrest): the lock sits on the cell's top-right corner, like a badge, so the opponent and points keep the cell's width
+   (inline, it cut "@STL" to "@ST" at 360 px; inside the corner it covered "@CAR"). The cell and its td let it show past the edge;
+   the text still clips inside .fgt-gt. */
+.fgt-grid td.fgt-c,.fgt-grid .fgt-cell.fgt-gx{overflow:visible}
+.fgt-grid .fgt-cell.fgt-gx .fgt-lk{position:absolute;top:-5px;right:-3px;font-size:9px;line-height:1;margin:0;padding:1px;background:#1c1f2b;border-radius:50%;z-index:1}
+`;
+const PHONE_VIEW_CSS = `.fgt-wkbody{scroll-snap-type:x mandatory}
+.fgt-wkbody:has(.fgt-grid){scroll-padding-left:104px}
+/* the Pinned | Page choice (weekScrollChoice): Page lifts the height caps, so a vertical swipe always scrolls the page */
+.fgt-wkhead .fgt-scrollseg{display:inline-flex}
+.fgt-pagescroll .fgt-wkbody,.fgt-pagescroll .fgt-dock{max-height:none}
+/* 2026-10-29 (Forrest): the strip and the checkbox go under the Week panel on a phone, so the Grid starts higher */
+[data-fgt="host"]>[data-fgt="hosttop"]{order:1}
+`;
 const WEEK_CSS = `
 .fgt-wk{font:12px/1.35 sans-serif;color:#e5e7eb;border:1px solid #2c3140;border-radius:4px;background:#1c1f2b;margin:6px 0;text-align:left}
 .fgt-wkhead{display:flex;gap:14px;align-items:baseline;padding:6px 10px;color:#9ca3af;flex-wrap:wrap}
@@ -2099,6 +2225,10 @@ const WEEK_CSS = `
 .fgt-seg{display:inline-flex;border:1px solid #3b4256;border-radius:4px;overflow:hidden}
 .fgt-seg button{font:12px sans-serif;background:#262a39;color:#9ca3af;border:none;padding:4px 9px;cursor:pointer}
 .fgt-seg button[aria-pressed="true"]{background:#1e3a5f;color:#dbeafe}
+.fgt-scrollseg{display:none}
+.fgt-retchip{font:12px sans-serif;border:1px solid #3b4256;border-radius:12px;padding:3px 10px;background:none;color:#9ca3af;cursor:pointer}
+.fgt-retchip:hover{border-color:#6d5fb3;color:#e5e7eb}
+.fgt-retchip[aria-pressed="true"]{background:#3b2f6b;border-color:#7c6bd6;color:#ede9fe}
 .fgt-wkhead .fgt-small{font-size:11px}
 .fgt-wkhead .fgt-note{font-size:11px;color:#9ca3af}
 .fgt-meter{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:6px 18px;padding:8px 10px;background:#141823;border-top:1px solid #2c3140}
@@ -2207,6 +2337,16 @@ button.fgt-all:hover{background:#26375a}
 .fgt-cell.fgt-chg{box-shadow:inset 0 0 0 1px #fbbf24}
 .fgt-cell.fgt-strk .fgt-gt{text-decoration:line-through;text-decoration-color:#6b7386;color:#7c8497}
 .fgt-cell .fgt-gt{margin-left:2px}
+.fgt-fp{white-space:nowrap}
+.fgt-cell.fgt-gx .fgt-gt.fgt-gtfp{display:flex;align-items:baseline;column-gap:.3em;text-overflow:clip}
+.fgt-gtfp .fgt-opp{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.fgt-gtfp .fgt-fp{flex:none}
+.fgt-gtfp.fgt-nofpu .fgt-fpu{display:none}
+.fgt-cell.fgt-gx.fgt-tight{padding-left:3px;padding-right:3px;gap:2px}
+.fgt-tight .fgt-gt.fgt-gtfp{column-gap:.2em}
+.fgt-tight .fgt-tag{margin-left:0}
+.fgt-fp.fgt-live::before{content:"●";color:#f87171;font-size:.75em;margin-right:2px;vertical-align:.1em}
+.fgt-tags{display:contents}
 .fgt-cell.fgt-na{cursor:default;color:#3f4454}
 .fgt-cell.fgt-lockd{cursor:not-allowed}
 .fgt-grid td.fgt-c{position:relative}
@@ -2220,7 +2360,7 @@ button.fgt-all:hover{background:#26375a}
 @media (hover:none){.fgt-c .fgt-irb{opacity:.85}}
 .fgt-cell.fgt-gx{position:relative;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:3px}
 .fgt-cell.fgt-gx .fgt-gt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.fgt-cell.fgt-gx>:not(.fgt-gt){flex:none}
+.fgt-cell.fgt-gx>:not(.fgt-gt),.fgt-cell.fgt-gx .fgt-tags>*{flex:none}
 .fgt-cell.fgt-gx .fgt-sl{margin-right:1px}
 .fgt-cell.fgt-gx.fgt-sel{background:#1e3a5f;border-color:#3b82f6;color:#dbeafe}
 .fgt-cell.fgt-gx.fgt-tgt{border:1px dashed #60a5fa;box-shadow:inset 0 0 0 999px rgba(96,165,250,.12)}
@@ -2250,6 +2390,29 @@ button.fgt-all:hover{background:#26375a}
 .fgt-bad2{color:#fca5a5;font-weight:600}
 .fgt-wk button:focus-visible,.fgt-wk a:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
 @media (prefers-reduced-motion:no-preference){.fgt-pl,.fgt-cell{transition:background .12s,border-color .12s}}
+/* 1.5.0 (phones). Nothing above changes: a narrow panel body (container query), a narrow viewport (day snap on the scroller) and a
+   touch screen (sizes) only. The panel keeps its own scroll on a phone so the day headers stay pinned (whole-page scroll tried and
+   dropped, Forrest 2026-10-28). Game text wraps at spaces only ("@CO / L 3" with break-anywhere, same day). */
+@container (max-width:560px){
+${PHONE_BODY_CSS}}
+@media (max-width:560px){
+${PHONE_VIEW_CSS}}
+/* A phone on its side (Forrest 2026-10-29): the same phone layout (how many days show comes from the width: daysShown) */
+@media ${PHONE_LANDSCAPE_MQ}{
+@container (min-width:561px){
+${PHONE_BODY_CSS}}
+${PHONE_VIEW_CSS}}
+@media (pointer:coarse){
+.fgt-wk{font-size:13px}
+.fgt-cell,.fgt-cols .fgt-pl,.fgt-btn,.fgt-seg button,.fgt-retchip,.fgt-chip,button.fgt-all,.fgt-minifill,.fgt-x,.fgt-wkhead a{min-height:32px;box-sizing:border-box}
+.fgt-cols .fgt-pl{height:auto}
+.fgt-cell{font-size:12px}
+.fgt-btn,.fgt-seg button,.fgt-chip,button.fgt-all,.fgt-minifill,.fgt-x{padding-left:8px;padding-right:8px}
+.fgt-wkhead a,button.fgt-all,.fgt-x{display:inline-flex;align-items:center}
+.fgt-c.fgt-hasirb .fgt-irb{width:20px;height:20px;font:700 11px/20px sans-serif;padding:0;text-align:center}
+.fgt-tag,.fgt-dst,.fgt-go,.fgt-sec,.fgt-pos,.fgt-dc,.fgt-sub2,.fgt-legend,.fgt-chip,.fgt-all,.fgt-minifill,.fgt-wkhead .fgt-small,.fgt-grid .fgt-who .fgt-p,.fgt-grid .fgt-grp td{font-size:11px}
+.fgt-tag{line-height:16px}
+}
 `;
 function ensureWeekStyle() {
   if (document.getElementById('fgt-style')) return;
@@ -2299,8 +2462,15 @@ function slotLine(s, extraClass) {
 // Views: buildColumnsBody(EDIT) / buildGridBody(EDIT) each return the body under the meter (Tasks 11 / 12 replace them).
 // Edits go through applyEdit(di, L) / applyLineups(lineups) (undo snapshot, sessionStorage, re-render); undoEdit(); discardAll().
 const WEEK_VIEW_KEY = 'fgt-week-view';
-function weekViewChoice() { try { return localStorage.getItem(WEEK_VIEW_KEY) === 'grid' ? 'grid' : 'columns'; } catch (e) { return 'columns'; } }
+// 1.5.0: with no choice stored yet, a narrow screen (a phone) starts on Grid, which reads better there than Columns
+function defaultWeekView(stored, width) { return stored === 'grid' || stored === 'columns' ? stored : width <= 560 ? 'grid' : 'columns'; }
+function weekViewChoice() { let v = null; try { v = localStorage.getItem(WEEK_VIEW_KEY); } catch (e) { /* private mode */ } return defaultWeekView(v, typeof innerWidth === 'number' ? innerWidth : Infinity); }
 function setWeekViewChoice(v) { try { localStorage.setItem(WEEK_VIEW_KEY, v); } catch (e) { /* private mode */ } }
+// 1.5.0 (Forrest 2026-10-29): on a phone the panel either scrolls inside itself, day headers pinned ('panel', the default), or
+// grows to its full height and the page scrolls ('page': one scroll, headers not pinned). Per browser; a phone-width screen only.
+const WEEK_SCROLL_KEY = 'fgt-week-scroll';
+function weekScrollChoice() { try { return localStorage.getItem(WEEK_SCROLL_KEY) === 'page' ? 'page' : 'panel'; } catch (e) { return 'panel'; } }
+function setWeekScrollChoice(v) { try { localStorage.setItem(WEEK_SCROLL_KEY, v); } catch (e) { /* private mode */ } }
 const EDIT = { key: null, pkey: null, route: null, team: null, now: null, opts: null, model: null, extras: null, lineups: [], undo: [], editing: false, view: weekViewChoice(),
   sel: null, pick: null, review: false, toast: '', saving: false, results: null, conflicts: [], loading: false, loadError: '', keepLast: null, savePhase: null };
 const OWN_TEAMS = {};   // leagueId → the user's own teamId, once a load or the edit extras said so
@@ -2351,7 +2521,101 @@ function editPaused() {
 }
 // The body scrolls both ways since 2026-10-18 (locked headers): every redraw keeps both offsets.
 function bodyScroll(panel) { const b = panel && panel.querySelector('.fgt-wkbody'); return b ? { x: b.scrollLeft, y: b.scrollTop } : null; }
-function restoreScroll(panel, pos) { const b = pos && panel.querySelector('.fgt-wkbody'); if (b) { b.scrollLeft = pos.x; b.scrollTop = pos.y; } }
+// 1.5.0 (Forrest 2026-10-29): the last offsets are also kept in memory, so collapsing and reopening the panel comes back to the
+// same day; a page reload starts fresh (on today, on a phone). Same team, period and view only.
+function keptScroll(panel) {
+  const k = EDIT.pkey + '|' + EDIT.view, p = bodyScroll(panel);
+  if (p) { EDIT.keptScroll = { k, x: p.x, y: p.y }; return p; }
+  return EDIT.keptScroll && EDIT.keptScroll.k === k ? { x: EDIT.keptScroll.x, y: EDIT.keptScroll.y } : null;
+}
+// How far to scroll so the row (day) nearest the pinned edge starts right at it: rows against the header's bottom, days against the
+// name column's right. 0 when within a pixel, at either end, or when the move would pass the end. At the very top or bottom it never
+// pulls back: the scroller stays at its end, so the next swipe goes on to the page (Forrest 2026-10-29).
+function snapDelta(rowTops, edge, top, maxTop) {
+  if (!rowTops.length || top <= 0 || top >= maxTop - 1) return 0;
+  let dy = rowTops[0] - edge;
+  for (const t of rowTops) if (Math.abs(t - edge) < Math.abs(dy)) dy = t - edge;
+  if (Math.abs(dy) <= 1 || top + dy > maxTop || top + dy < 0) return 0;
+  return Math.round(dy);
+}
+// 1.5.0 (Forrest 2026-10-29): measured after each render, since the room depends on the screen. A cell whose text would clip
+// drops its FP unit ("21.85" instead of "21.85 FI"). A corner badge (SUSP, NEW…) may sit over a phone cell's text: it never costs
+// text or row height (Forrest 2026-10-29: keep the text while it stays readable).
+// 2026-10-29 (Forrest: not a fixed count): how many whole days fit in `room` at `min` px each, at least 1, at most the week.
+const GRID_DAY_MIN = 75, COLUMNS_DAY_MIN = 220;   // px: a Grid cell's "@DET / 6.75 FP"; a Columns row's "C  C. Bedard  🔒 @DET 6.75 FP"
+function daysShown(room, min, days) { return Math.max(1, Math.min(days, Math.floor(room / min))); }
+// The phone layout is on: a narrow body, or a phone on its side (the same test as the CSS).
+function phoneLayout(body) { return body.clientWidth <= 560 || (typeof matchMedia === 'function' && matchMedia(PHONE_LANDSCAPE_MQ).matches); }
+function fitCells(body) {
+  if (typeof body.querySelectorAll !== 'function') return;
+  const over = n => !!n && n.scrollWidth > n.clientWidth + 1;   // the text clips, or (desktop) the opponent had to shorten
+  for (const gt of body.querySelectorAll('.fgt-gtfp')) {
+    if (!gt.querySelector('.fgt-fpu') || !(over(gt) || over(gt.querySelector('.fgt-opp')))) continue;
+    gt.classList.add('fgt-nofpu');
+    if (over(gt.querySelector('.fgt-opp'))) gt.closest('.fgt-cell').classList.add('fgt-tight');   // still short: tighter padding and gaps
+  }
+  // A phone cell whose corner badge covers more than about two characters of its text gets a line's room under it (Larkin's
+  // "IR STL 12:00p" read "STL 12:" under SUSP, 2026-10-29); a smaller overlap stays: the text is still readable.
+  if (!phoneLayout(body) || typeof document === 'undefined' || !document.createRange) return;
+  for (const tags of body.querySelectorAll('.fgt-grid .fgt-cell .fgt-tags')) {
+    const cell = tags.closest('.fgt-cell'), gt = cell.querySelector('.fgt-gt');
+    if (!gt) continue;
+    const t = tags.getBoundingClientRect(), r = document.createRange(); r.selectNodeContents(gt);
+    if (badgeOverlap(Array.from(r.getClientRects()), t) > BADGE_OVERLAP_MAX) cell.classList.add('fgt-tagpad');
+  }
+}
+// How much text a badge hides: the widths of the text boxes' overlap with it, summed (boxes that share no height with it don't count).
+const BADGE_OVERLAP_MAX = 14;   // px: about two characters
+function badgeOverlap(textRects, t) {
+  let w = 0;
+  for (const x of textRects) if (x.width && x.bottom > t.top && x.top < t.bottom) w += Math.max(0, Math.min(x.right, t.right) - Math.max(x.left, t.left));
+  return w;
+}
+// 1.5.0 (phones): a narrow panel opens on today, once per team, period and view; after that the user's own scroll position stands.
+function todayScrollLeft(cols, todayIndex) { return todayIndex < 0 ? 0 : Math.max(0, cols[todayIndex].left - cols[0].left); }
+function afterWeekRender(panel, hadDock, prevToast) {
+  const b = panel.querySelector('.fgt-wkbody');
+  if (b && phoneLayout(b) && EDIT.scrolledFor !== EDIT.pkey + '|' + EDIT.view) {
+    const cells = Array.from(b.querySelectorAll(EDIT.view === 'grid' ? 'thead th:not(.fgt-whoh)' : '.fgt-col'));
+    b.scrollLeft = todayScrollLeft(cells.map(c => c.getBoundingClientRect()), cells.findIndex(c => c.classList.contains('fgt-today')));
+    EDIT.scrolledFor = EDIT.pkey + '|' + EDIT.view;
+  }
+  if (b) fitCells(b);
+  // Pinned Grid on a phone: when a scroll ends, ease to the nearest row edge under the pinned day headers AND the nearest whole day,
+  // in one move. Not CSS snap on both axes: the browser traded the day snap for the row snap (half days, phone 2026-10-29); and a
+  // vertical-only ease could start while Firefox was still snapping the day, stopping it half way (phone, same night). A flick still
+  // goes as far as it likes; the CSS day snap (one day per swipe) stays.
+  if (b && phoneLayout(b) && EDIT.view === 'grid' && !panel.classList.contains('fgt-pagescroll') && typeof b.addEventListener === 'function')
+    b.addEventListener('scrollend', () => {
+      const head = b.querySelector('.fgt-grid thead'), names = head && head.querySelector('th.fgt-whoh'); if (!names) return;
+      const rows = Array.from(b.querySelectorAll('.fgt-grid tbody tr, .fgt-grid tfoot tr')), days = Array.from(head.querySelectorAll('th:not(.fgt-whoh)'));
+      // the edge is a header CELL's bottom: the cells stick, the thead itself scrolls away (measuring it made dy always 0, phone 2026-10-29)
+      const dy = snapDelta(rows.map(r => r.getBoundingClientRect().top), names.getBoundingClientRect().bottom, b.scrollTop, b.scrollHeight - b.clientHeight);
+      const dx = snapDelta(days.map(d => d.getBoundingClientRect().left), names.getBoundingClientRect().right, b.scrollLeft, b.scrollWidth - b.clientWidth);
+      if (dx || dy) b.scrollTo({ left: b.scrollLeft + dx, top: b.scrollTop + dy, behavior: 'smooth' });
+    });
+  // the prompt bar sits above the grid (2026-10-18); on a touch screen bring it into view when it opens
+  const dock = panel.querySelector('[data-fgt="dock"]');
+  if (dock && !hadDock && touchUI()) dock.scrollIntoView({ block: 'nearest' });
+  // so is a new message (a tap's reason): the panel is a page long on a phone and the message line sits above the grid
+  const toast = panel.querySelector('.fgt-toast');
+  if (toast && touchUI() && toast.textContent !== prevToast) toast.scrollIntoView({ block: 'nearest' });
+}
+// Every redraw (the panel is in the page by now): first how many days show, since the day widths follow from it, then the kept offsets.
+// Restoring first put a 4-day phone's offset on the default 3-day widths; setting the count then moved the days under it, and each
+// redraw snapped a day further left (phone 2026-10-29: today 2nd on load, 3rd half a second later).
+function restoreScroll(panel, pos) {
+  const b = panel.querySelector('.fgt-wkbody');
+  if (b && phoneLayout(b) && b.style && EDIT.model) {
+    const n = EDIT.model.days.length;
+    b.style.setProperty('--fgt-gshow', String(daysShown(b.clientWidth - 104, GRID_DAY_MIN, n)));
+    b.style.setProperty('--fgt-cshow', String(daysShown(b.clientWidth - 16, COLUMNS_DAY_MIN, n)));
+    // a new width (the phone turned) makes the kept sideways offset land between days: open on today again
+    if (EDIT.shownWidth !== undefined && EDIT.shownWidth !== b.clientWidth) { EDIT.scrolledFor = null; pos = pos && { x: 0, y: pos.y }; }
+    EDIT.shownWidth = b.clientWidth;
+  }
+  if (b && pos) { b.scrollLeft = pos.x; b.scrollTop = pos.y; }
+}
 // 2026-10-18 (user: messages take vertical space): every message has a ×; move messages close after 8 s, a save whose days all
 // saved after 10 s; a day that did not save stays until closed.
 function autoDismissMs(kind, results) {
@@ -2382,9 +2646,10 @@ function rerenderWeek() {
   const root = document.querySelector(SEL.rosterRoot), old = root && root.querySelector('[data-fgt="week"]');
   if (!old || !EDIT.team) return;
   EDIT.now = new Date(); rebuildModel();   // locks follow the clock between loads
-  const pos = bodyScroll(old), panel = buildWeekPanel();
+  const pos = keptScroll(old), hadDock = !!old.querySelector('[data-fgt="dock"]'), oldToast = old.querySelector('.fgt-toast'), panel = buildWeekPanel();
   old.replaceWith(panel);
   restoreScroll(panel, pos);
+  afterWeekRender(panel, hadDock, oldToast ? oldToast.textContent : '');
   armDismiss();
 }
 // Undo snapshots are the stored pending moves (not slot arrays), so an undo after a refresh is re-applied like any other refresh.
@@ -2479,13 +2744,23 @@ function editControl() {
   if (EDIT.loading) return el('span', { class: 'fgt-small', text: 'loading lineup data…' });
   return null;
 }
+// 1.5.0 (Forrest 2026-10-29): the roster page's return-date setting, a chip in the panel's head instead of a checkbox under the
+// strip (the Matchups page keeps its checkbox: no panel there). Lit = on. A tap saves it and re-renders the strip and the panel.
+function retChip() {
+  const on = returnDatesOn();
+  return click(el('button', { type: 'button', class: 'fgt-retchip', 'aria-pressed': String(on),
+    title: RETURN_LABEL + (on ? ': on (tap to turn off)' : ': ' + RETURN_OFF_NOTE + ' (tap to turn on)'), text: '↩ Return dates' }),
+  () => { setReturnDatesOn(!on); renderRoster(EDIT.route, true, true); });
+}
 function buildWeekHead(collapsed) {
   const M = EDIT.model, team = EDIT.team, paused = editPaused();
   const toggle = click(el('a', { href: '#', text: (collapsed ? '▸' : '▾') + ' Week' }), () => { setWeekCollapsed(!collapsed); rerenderWeek(); });
   const views = el('span', { class: 'fgt-seg', role: 'group', 'aria-label': 'View' }, [['columns', 'Columns'], ['grid', 'Grid']].map(([v, label]) =>
     click(el('button', { type: 'button', 'aria-pressed': String(EDIT.view === v), text: label }), () => { EDIT.view = v; setWeekViewChoice(v); Object.assign(EDIT, { sel: null, pick: null }); rerenderWeek(); })));
-  const kids = [views, toggle, el('b', { text: dayLabel(team.period.start) + ' – ' + dayLabel(team.period.end) }), el('span', { text: 'now: ' + dayLabel(M.today) + ' ' + clock(EDIT.now) })];
-  if (EDIT.opts && EDIT.opts.returnDates) kids.push(el('span', { style: 'color:' + RET_COLOR, text: 'return dates on' }));
+  const scroll = weekScrollChoice(), scrolls = el('span', { class: 'fgt-seg fgt-scrollseg', role: 'group', 'aria-label': 'Scrolling' }, [
+    ['panel', '📌 Pinned', 'The panel scrolls by itself; the day headers stay in view'], ['page', 'Page', 'The panel shows in full; the page scrolls (headers scroll away)']].map(([v, label, tip]) =>
+    click(el('button', { type: 'button', 'aria-pressed': String(scroll === v), title: tip, text: label }), () => { setWeekScrollChoice(v); rerenderWeek(); })));
+  const kids = [views, scrolls, retChip(), toggle, el('b', { text: dayLabel(team.period.start) + ' – ' + dayLabel(team.period.end) }), el('span', { text: 'now: ' + dayLabel(M.today) + ' ' + clock(EDIT.now) })];
   kids.push(el('span', { class: 'fgt-small', style: 'margin-left:auto', text: paused ? 'auto-refresh paused: ' + (pendingCount() > 0 ? 'unsaved moves' : 'choosing') : 'refreshes every 5 min' }),
     click(el('a', { href: '#', class: 'fgt-small', title: 'Reload from Fantrax now (pending moves are kept)', text: 'Refresh' }), manualRefresh));
   if (EDIT.editing) kids.push(btn('Fill every day', '', fillWeekClick, Object.assign({ title: 'Fill each day, best FP/G first, stopping at the games max' }, EDIT.saving ? { disabled: '' } : {})));
@@ -2714,7 +2989,7 @@ function colRow(E, di, o) {
   else {
     nm = p.shortName || p.name;
     const dropped = !!g && !o.bench && o.ledger.dropped.has(di + '|' + o.id);   // 1.4.9: played past the max, never scored
-    if (g) { gm = act.counted && !dropped ? (g.opp + ' ' + shortTime(g.time)).trim() : g.opp; if (!act.counted || dropped) cls += ' fgt-out'; else if (act.by === 'date') cls += ' fgt-ret'; }
+    if (g) { gm = fpGameText(g, row) || (act.counted && !dropped ? (g.opp + ' ' + shortTime(g.time)).trim() : g.opp); if (!act.counted || dropped) cls += ' fgt-out'; else if (act.by === 'date') cls += ' fgt-ret'; }
     else if (o.slot) { cls += ' fgt-idle'; nm = 'empty'; gm = p.shortName || p.name; }
     else gm = 'no game';
     if (o.bench && !E.editing) cls += ' fgt-bench';
@@ -2739,7 +3014,8 @@ function colRow(E, di, o) {
   if (o.ir && irIneligibleKnown(M, di, o.id)) kids.push(notIRTag());   // mock parity #3: red !IR, read-only too
   else if (o.ir) { const sn = statusLabel(E.team.statusNames, '3'), n = o.off ? offRowNote(o.off) : { text: statusShort(sn), title: sn }; kids.push(el('span', { class: 'fgt-tag fgt-tag-off', text: n.text, title: n.title })); }   // 1.3.1's status tag
   if (o.id && locked(M, di, o.id) && d.state !== 'past') kids.push(el('span', { class: 'fgt-lk', text: '🔒', title: lockWhy(M, di, o.id) }));
-  kids.push(el('span', { class: 'fgt-gm', text: gm }));
+  const fpn = g && fpGameNodes(g, row);
+  kids.push(fpn ? el('span', { class: 'fgt-gm' }, fpn) : el('span', { class: 'fgt-gm', text: gm }));
   if (paired !== undefined) kids.push(el('span', { class: 'fgt-pair', text: '· ' + (M.players[paired].shortName || M.players[paired].name) + ' into IR' }));
   const node = el('div', { class: cls, title: tip }, kids);
   if (o.clickable) {
@@ -2747,7 +3023,7 @@ function colRow(E, di, o) {
     if (mk && mk.k === 'blocked') node.setAttribute('aria-disabled', 'true');
     click(node, () => colMoveClick(di, tk));
     node.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); try { colMoveClick(di, tk); } catch (err) { console.warn(LOG, 'week panel', err); } } });
-  }
+  } else if (!E.editing) toastTap(node, tapReason('readonly', { tip }));   // 1.5.0: touch only (no-op with a mouse)
   return node;
 }
 function colSection(E, di, label, key, T) {
@@ -2835,7 +3111,7 @@ function buildColumnsBody(E) {
     for (const id of fixedRows) {
       const p = M.players[id], g = p.row && p.row.games.find(x => x.day === d.day), sn = statusLabel(E.team.statusNames, d.rows[id].stId);
       kids.push(el('div', { class: 'fgt-pl fgt-offrow', title: p.name + ' · ' + sn + ' · can\'t be moved here' }, [el('span', { class: 'fgt-pos', text: (p.row && p.row.pos || '').split(',')[0].trim() }), el('span', { class: 'fgt-nm', text: p.shortName || p.name }),
-        el('span', { class: 'fgt-tag fgt-tag-off', text: statusShort(sn), title: sn }), el('span', { class: 'fgt-gm', text: g ? (g.opp + ' ' + g.time).trim() : 'no game' })]));
+        el('span', { class: 'fgt-tag fgt-tag-off', text: statusShort(sn), title: sn }), (g && fpGameNodes(g, p.row)) ? el('span', { class: 'fgt-gm' }, fpGameNodes(g, p.row)) : el('span', { class: 'fgt-gm', text: g ? (g.opp + ' ' + g.time).trim() : 'no game' })]));
     }
     return el('div', { class: 'fgt-col fgt-' + d.state }, kids);
   }));
@@ -2849,7 +3125,53 @@ const gameOfDay = (M, di, id) => { const r = M.players[id].row; return r ? r.gam
 // The Grid cell's text without a game: 'no game' for a slot or reserve cell (2026-10-18: a reserve cell's lone dot read as blank),
 // the dot after IR.
 const gridCellText = (c, text) => text || (c.kind === 'ir' ? '·' : 'no game');
-const gameText = (M, di, id, long) => { const g = gameOfDay(M, di, id); return g ? (g.opp + ' ' + (long ? g.time : shortTime(g.time))).trim() : ''; };
+// 1.5.0 (Forrest 2026-10-29): a started game shows the opponent and his fantasy points, not the score: "@DET 6.01 FP" (desktop
+// and phone; on a phone it wraps "@DET / 6.01 FP"). A reserve or IR game has no points (Fantrax gives him no GP or FPts that day):
+// the opponent alone. Fantrax's score text is away first ("CHI 1<br/>@DET 1", "FLA 3<br/>@CAR 2 F/OT"); his team picks the other.
+const fmtFp = v => (Math.round(v * 100) / 100 || 0).toFixed(2);   // Fantrax's own precision (Forrest 2026-10-29)
+// The opponent of a started game ("@DET" away, "CHI" home); null when it is not a score or his team is in neither half.
+function startedOpp(g, row) {
+  const a = /^([A-Z]{2,3})\s+\d+$/i.exec((g && g.opp) || ''), h = /^@([A-Z]{2,3})\s+\d+/i.exec((g && g.time) || ''), t = teamOfRow(row).toUpperCase();
+  if (!a || !h || !t) return null;
+  const home = h[1].toUpperCase() === t;
+  if (!home && a[1].toUpperCase() !== t) return null;
+  return (home ? a[1] : '@' + h[1]).toUpperCase();
+}
+function fpGameText(g, row) {
+  const opp = startedOpp(g, row);
+  return opp === null ? null : typeof g.fp === 'number' ? opp + ' ' + fmtFp(g.fp) + '\u00a0FP' : opp;
+}
+// A started game still under way: Fantrax's score text has no final mark yet ("@DET 1", not "@DET 4 F" / "F/OT" / "F/SO").
+// Shown as a red dot (before his points, or after the opponent of a reserve game); text-only places say "(live)".
+const isLive = g => !!g && /^@[A-Z]{2,3}\s+\d+/i.test(g.time || '') && !/\sF(\/\S+)?\s*$/.test(g.time || '');
+// The same text as nodes: the opponent, then the points in a span that carries the live dot. null like fpGameText.
+function fpGameNodes(g, row) {
+  const opp = startedOpp(g, row); if (opp === null) return null;
+  const live = isLive(g), fp = typeof g.fp === 'number';
+  if (!fp && !live) return [el('span', { class: 'fgt-opp', text: opp })];
+  // the unit in its own span: a cell with a badge drops it, and the opponent (not the points) shortens first (desktop, 2026-10-29)
+  return [el('span', { class: 'fgt-opp', text: opp }), ' ', el('span', { class: 'fgt-fp' + (live ? ' fgt-live' : ''), title: live ? 'Game in progress' : '' },
+    fp ? [fmtFp(g.fp), el('span', { class: 'fgt-fpu', text: '\u00a0FP' })] : [])];
+}
+// His team for startedOpp: the row's, else (a player dropped this week has none) the one team in all his scored games; '' if unsure.
+function teamOfRow(row) {
+  if (!row) return '';
+  if (row.team) return row.team;
+  let common = null;
+  for (const g of row.games || []) {
+    const a = /^([A-Z]{2,3})\s+\d+$/i.exec(g.opp || ''), h = /^@([A-Z]{2,3})\s+\d+/i.exec(g.time || '');
+    if (!a || !h) continue;
+    const both = [a[1].toUpperCase(), h[1].toUpperCase()];
+    common = common ? common.filter(t => both.includes(t)) : both;
+  }
+  return common && common.length === 1 ? common[0] : '';
+}
+const gameText = (M, di, id, long) => {
+  const g = gameOfDay(M, di, id); if (!g) return '';
+  const fpt = fpGameText(g, M.players[id].row);
+  const fp = fpt && typeof g.fp === 'number' ? ' · ' + fmtFp(g.fp) + ' FP' : '';
+  return long ? (g.opp + ' ' + g.time).trim() + fp + (fpt && isLive(g) ? ', live' : '') : fpt ? fpt + (isLive(g) ? ' (live)' : '') : (g.opp + ' ' + shortTime(g.time)).trim();
+};
 const gridKey = (L, id) => { const s = L.s.indexOf(id); return s >= 0 ? 's:' + s : L.ir.includes(id) ? 'i:' + id : 'b:' + id; };
 const shortDay = (M, di) => dayName(M, di);
 function gridCellClick(di, id) {
@@ -2930,15 +3252,19 @@ function gridCellNode(E, di, id, lineups, ledger, T) {
   const pt = E.pick && pickTarget(E.pick, di, id), full = g ? gameText(M, di, id, true) + ' · ' : '', tip = c.dropped ? full + "past the games max: Fantrax didn't count it" : d.state === 'past' ? full.slice(0, -3) : full + (pt ? pickTip(M, E.pick, id) : mk ? (mk.k === 'blocked' ? mk.why + '.' : 'Click: ' + mk.txt + '.') : c.locked ? 'Locked: ' + lockWhy(M, di, id) : plan ? plan.text + '.' : base);
   const kids = [];
   if (act) kids.push(el('span', { class: 'fgt-sl', text: c.slot })); else if (inIR) kids.push(el('span', { class: 'fgt-sl', style: 'color:#fca5a5', text: 'IR' }));
-  kids.push(el('span', { class: 'fgt-gt', text: gridCellText(c, g ? gameText(M, di, id) : '') }));
-  kids.push(...rosterTagNodes(M, di, id));
-  if (c.tag && g && !(inIR && c.tag.text === 'IR')) kids.push(el('span', { class: 'fgt-tag fgt-tag-' + c.tag.kind, text: c.tag.text, title: c.tag.title }));
-  if (c.over && g) kids.push(el('span', { class: 'fgt-tag fgt-tag-over', text: 'over', title: "Past the games max: Fantrax won't count it (the day starts at the max)" }));
-  if (inIR && irIneligibleKnown(M, di, id)) kids.push(notIRTag());   // mock parity #3, read-only too
+  const fpn = g && fpGameNodes(g, row);
+  kids.push(el('span', { class: 'fgt-gt' + (fpn ? ' fgt-gtfp' : '') }, fpn || [gridCellText(c, g ? gameText(M, di, id) : '')]));
+  // 1.5.0: the tags sit in one box (display:contents on desktop, so nothing moves there); a narrow Grid puts it in the cell's
+  // bottom-right corner so a tag no longer adds a third line (Forrest 2026-10-29)
+  const tags = rosterTagNodes(M, di, id);
+  if (c.tag && g && !(inIR && c.tag.text === 'IR')) tags.push(el('span', { class: 'fgt-tag fgt-tag-' + c.tag.kind, text: c.tag.text, title: c.tag.title }));
+  if (c.over && g) tags.push(el('span', { class: 'fgt-tag fgt-tag-over', text: 'over', title: "Past the games max: Fantrax won't count it (the day starts at the max)" }));
+  if (inIR && irIneligibleKnown(M, di, id)) tags.push(notIRTag());   // mock parity #3, read-only too
+  if (tags.length) kids.push(el('span', { class: 'fgt-tags' }, tags));
   if (c.locked && d.state !== 'past') kids.push(el('span', { class: 'fgt-lk', text: '🔒', title: lockWhy(M, di, id) }));
   const node = el('button', { type: 'button', class: cls, title: tip, 'data-g2': di + '|' + id }, kids);
   td.appendChild(node);   // the cell first: the IR button is its sibling (tab order, no interactive nesting)
-  if (!E.editing) { node.setAttribute('disabled', ''); return td; }
+  if (!E.editing) { if (touchUI()) toastTap(node, tapReason('readonly', { tip })); else node.setAttribute('disabled', ''); return td; }
   if (live) {
     // IR chip, always visible (mock parity #1): with room it moves him to IR; IR full, he is IR-eligible -> the dock lists one swap per IR player
     const ir = !c.locked && !inIR ? toIR(M, di, L, id) : null;
@@ -2948,9 +3274,11 @@ function gridCellNode(E, di, id, lineups, ledger, T) {
       e => { e.stopPropagation(); Object.assign(EDIT, { toast: '', pick: null, sel: { di, key, s: selOf(key), irOnly: true } }); rerenderWeek(); }));
     if (ir || swap) td.classList.add('fgt-hasirb');
     click(node, () => gridCellClick(di, id));
-  } else if (d.state === 'past' || c.locked) click(node, () => { Object.assign(EDIT, { toast: c.locked ? 'Locked: ' + lockWhy(M, di, id) + '.' : '', sel: null, pick: null }); rerenderWeek(); });
+  } else if (d.state === 'past' || c.locked) click(node, () => { Object.assign(EDIT, { toast: c.locked ? 'Locked: ' + lockWhy(M, di, id) + '.' : touchUI() ? tapReason('past', { dropped: c.dropped, tip }) : '', sel: null, pick: null }); rerenderWeek(); });
   return td;
 }
+// a dock choice: a blocked one (only tappable on touch) says why in the message line and keeps the choice open
+function dockOptionTap(di, o) { if (o.k === 'blocked') { EDIT.toast = tapReason('blocked', o); rerenderWeek(); } else colMoveClick(di, o.key); }
 function gridDock(E) {
   const M = E.model, kids = [];
   if (E.pick) {
@@ -2966,7 +3294,8 @@ function gridDock(E) {
       const open = !q && o.k !== 'blocked';
       const b = el('button', { type: 'button', class: 'fgt-btn fgt-opt-' + o.k }, [open ? openOption(M, di, o.key.slice(2)) : o.txt].concat(open && o.pair ? [el('span', { class: 'fgt-warnl', text: o.pair })] : []).concat(o.note ? [' ', el('span', { class: o.plays ? 'fgt-warnl' : 'fgt-small', text: o.note })] : []));
       if (o.title) b.title = o.title;
-      if (o.k === 'blocked') { b.setAttribute('disabled', ''); b.title = o.why; } else click(b, () => colMoveClick(di, o.key));
+      if (o.k === 'blocked' && touchUI()) { b.setAttribute('aria-disabled', 'true'); b.style.opacity = '.45'; b.title = o.why; click(b, () => dockOptionTap(di, o)); }   // 1.5.0: a disabled button ignores taps
+      else if (o.k === 'blocked') { b.setAttribute('disabled', ''); b.title = o.why; } else click(b, () => dockOptionTap(di, o));
       kids.push(b);
     }
     if (!opts.length) kids.push(el('span', { class: 'fgt-small', text: q ? 'Nowhere to move him that day.' : OPEN_NONE }));
@@ -2987,7 +3316,7 @@ function buildGridBody(E) {
         if (d.state === 'past') n.setAttribute('disabled', ''); else click(n, () => { EDIT.pick = null; colMoveClick(di, 's:' + i); });
         open.push(n);
       });
-      kids.push(el('div', {}, open.length ? open : [el('span', { class: 'fgt-small', text: 'no open slots' })]));
+      kids.push(el('div', { class: 'fgt-opens' }, open.length ? open : [el('span', { class: 'fgt-small', text: 'no open slots' })]));
     }
     return el('th', { class: 'fgt-' + d.state + (E.sel && E.sel.di === di ? ' fgt-selday' : '') }, kids);
   });
@@ -2998,12 +3327,15 @@ function buildGridBody(E) {
   // Mock parity #2: whoever was on IR on the period's first loaded day is listed only in a last group.
   const fi = M.days.findIndex(d => d.slots !== null), irIds = new Set(fi >= 0 ? M.days[fi].base.ir : []);
   for (const x of groups) x.ids = x.ids.filter(id => !irIds.has(id));
-  const irGroup = { g: 'Started the week on IR', ids: M.order.filter(id => irIds.has(id)) };
+  const irGroup = { g: 'Started on IR', ids: M.order.filter(id => irIds.has(id)) };
   groups.push(irGroup);
   for (const { g, ids } of groups.filter(x => x.ids.length)) {
     body.push(el('tr', { class: 'fgt-grp' }, [el('td', { class: 'fgt-gl', text: g }), el('td', { colspan: String(M.days.length) })]));
     for (const id of ids) {
-      const p = M.players[id], sub = [(p.row && p.row.pos) || '', E.extras ? fpgShort(M, id) : '–'].filter(Boolean).join(' · ');
+      // 1.5.0: a narrow Grid drops the GP count (.fgt-gpn) so the sub line has room for the start-all pill
+      const p = M.players[id], v = E.extras ? rankFpg(M, id) : null, gpTail = v !== null ? ' · ' + p.gp + ' GP' : '';
+      // the positions in their own span (.fgt-pp): a narrow Grid shortens them first, so the FP/G always shows ("C,LW… · 4.0")
+      const pos = (p.row && p.row.pos) || '', val = !E.extras ? '–' : v === null ? (p.gp || 0) + ' GP' : v.toFixed(1);
       // Fantrax may draw (or redraw) its table after the Grid, so the link is looked up on hover, focus and click, not here.
       const lastDay = M.days.filter(d => d.slots !== null).pop(), stillOn = !lastDay || onRoster(M, M.days.indexOf(lastDay), id);
       const keyOf = x => posTeamKey(((M.players[x].row && M.players[x].row.pos) || '') + '-' + ((M.players[x].row && M.players[x].row.team) || ''));
@@ -3012,13 +3344,16 @@ function buildGridBody(E) {
       const nm = click(el('button', { type: 'button', class: 'fgt-wl', text: p.shortName || p.name }), () => { const a = card(); if (a) a.click(); });
       const mark = () => nm.classList.toggle('fgt-wl-on', !!card());
       nm.addEventListener('mouseenter', mark); nm.addEventListener('focus', mark);
-      const kids = [el('span', { class: 'fgt-wn' }, [nm, el('span', { class: 'fgt-p', text: sub })])];
+      const subKids = (pos ? [el('span', { class: 'fgt-pp', text: pos }), el('span', { class: 'fgt-pval', text: ' · ' + val })] : [el('span', { class: 'fgt-pval', text: val })]).concat(gpTail ? [el('span', { class: 'fgt-gpn', text: gpTail })] : []);
+      const kids = [el('span', { class: 'fgt-wn' }, [nm, el('span', { class: 'fgt-p' }, subKids)])];
       // 2026-10-18: the start-all state shows without a hover; none on the started-on-IR rows (coming off IR is another move)
       const pill = E.editing && loaded && g !== irGroup.g ? allGamesPill(M, lineups, id) : null;
       if (pill && pill.state !== 'none') {
-        kids.push(pill.state === 'done' ? el('span', { class: 'fgt-all', title: 'Already starts every remaining game he has', text: '✓ all' })
-          : pill.state === 'go' ? click(el('button', { type: 'button', class: 'fgt-all', title: allGamesTip(M, lineups, id), text: 'start +' + pill.n }), () => allGamesClick(id))
-          : el('span', { class: 'fgt-all', title: allGamesTip(M, lineups, id), text: 'start +0' }));
+        // the .fgt-pw words go in a narrow Grid ("✓", "+2")
+        const pw = t => el('span', { class: 'fgt-pw', text: t });
+        kids.push(pill.state === 'done' ? el('span', { class: 'fgt-all', title: 'Already starts every remaining game he has' }, ['✓', pw(' all')])
+          : pill.state === 'go' ? click(el('button', { type: 'button', class: 'fgt-all', title: allGamesTip(M, lineups, id) }, [pw('start '), '+' + pill.n]), () => allGamesClick(id))
+          : toastTap(el('span', { class: 'fgt-all', title: allGamesTip(M, lineups, id) }, [pw('start '), '+0']), tapReason('startAll', { tip: allGamesTip(M, lineups, id) })));
       }
       // 2026-10-23 (user): no tooltip on the name cell (it was the Fill ranking sentence, then the full name; neither was needed)
       const who = el('td', { class: 'fgt-who' }, [el('div', { class: 'fgt-wr' }, kids)]);
@@ -3034,9 +3369,12 @@ function buildGridBody(E) {
   ]);
   const table = el('table', { class: 'fgt-grid', style: '--fgt-days:' + M.days.length }, [el('thead', {}, [el('tr', {}, [el('th', { class: 'fgt-whoh', text: 'Player' + (E.extras ? ' · ' + fpgHeader() : '') })].concat(heads))]), el('tbody', {}, body), tfoot]);
   if (E.editing) {
-    table.addEventListener('mouseover', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (!c || e.target.closest('.fgt-irb')) clearPreview(); else showPreview(table, c); });
-    table.addEventListener('mouseout', e => { if (e.target.closest && e.target.closest('[data-g2]')) clearPreview(); });
-    table.addEventListener('focusin', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (c) showPreview(table, c); else clearPreview(); });   // keyboard focus previews like hover
+    // 1.5.0: a tap fires a mouseover and a focus but never a mouseout, so the preview is for a real hover and for keyboard focus only
+    if (typeof matchMedia !== 'function' || matchMedia('(hover:hover)').matches) {
+      table.addEventListener('mouseover', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (!c || e.target.closest('.fgt-irb')) clearPreview(); else showPreview(table, c); });
+      table.addEventListener('mouseout', e => { if (e.target.closest && e.target.closest('[data-g2]')) clearPreview(); });
+    }
+    table.addEventListener('focusin', e => { const c = e.target.closest && e.target.closest('[data-g2]'); if (c && e.target.matches(':focus-visible')) showPreview(table, c); else clearPreview(); });   // keyboard focus previews like hover
     table.addEventListener('focusout', clearPreview);
   }
   const legend = buildLegend('grid', E);
@@ -3062,17 +3400,18 @@ function buildWeekPanel() {
     kids.push(...body.filter(isLegend));
   }
   // title '': up to 1.4.7 the panel sat inside Fantrax's <headline title="Team Roster">, whose tooltip it would inherit
-  return el('div', { class: 'fgt-wk' + (EDIT.saving ? ' fgt-saving' : ''), 'data-fgt': 'week', 'data-fgt-key': EDIT.key, title: '', style: 'min-width:0' }, kids);
+  return el('div', { class: 'fgt-wk' + (EDIT.saving ? ' fgt-saving' : '') + (weekScrollChoice() === 'page' ? ' fgt-pagescroll' : ''), 'data-fgt': 'week', 'data-fgt-key': EDIT.key, title: '', style: 'min-width:0' }, kids);
 }
 
 function renderWeek(root, host, route, team, key, now, opts, fresh) {
   ensureWeekStyle();
   syncEdit(route, team, key, now, opts, fresh);
-  const pos = bodyScroll(root.querySelector('[data-fgt="week"]'));
+  const prev = root.querySelector('[data-fgt="week"]'), pos = keptScroll(prev), hadDock = !!(prev && prev.querySelector('[data-fgt="dock"]')), prevToast = prev && prev.querySelector('.fgt-toast');
   removeOwn(root, 'week');
   const panel = buildWeekPanel();
   host.appendChild(panel);
   restoreScroll(panel, pos);
+  afterWeekRender(panel, hadDock, prevToast ? prevToast.textContent : '');
   armDismiss();
   if (autoEditWanted(EDIT) || statsWanted(EDIT)) startEditing();   // 2026-10-18: the extras load by themselves (editable on the user's own team only)
   else if (extrasRefreshWanted(EDIT, fresh)) refreshExtras();
@@ -3180,7 +3519,7 @@ function renderRoster(route, force, stale) {
   return cachedLoadTeam(route.leagueId, { teamId: route.teamId, period, day, profiles: returnDatesOn() }, undefined, undefined, undefined, stale).then(withDates(route.leagueId)).then(({ team, opts }) => {
     if (!stillWanted()) return;
     const now = new Date();
-    finishUpdate(root, 'strip', () => { anchor.appendChild(buildTable('strip', key, team, now, opts)); removeOwn(root, 'retctl'); anchor.appendChild(buildReturnControl('roster', key, () => renderRoster(route, true, true))); });
+    finishUpdate(root, 'strip', () => { fitTable(anchor.appendChild(buildTable('strip', key, team, now, opts)), anchor, () => buildTable('strip', key, team, now, opts, true)); removeOwn(root, 'retctl'); });   // 1.5.0: the return-date setting is a chip in the Week panel's head (retChip)
     renderWeek(root, host, route, team, key, now, opts, fresh);
     renderPerDay(team, key, now, opts);
     renderCellStatus(team, key, now, opts);
@@ -3192,6 +3531,10 @@ function renderRoster(route, force, stale) {
 }
 
 // ---------------------------------------------------------------- start-up
+
+// 1.5.0: coming back to the tab re-pulls only after 2 minutes away or on a new day (a phone switches apps all the time)
+const REFRESH_HIDDEN_MS = 120000;
+function refreshOnShow(hiddenAt, now) { return !hiddenAt || now - hiddenAt >= REFRESH_HIDDEN_MS || dayString(hiddenAt) !== dayString(now); }
 
 // 1.4.0: Esc cancels a selection (added once, in start)
 function onEscape(e) { if (e.key === 'Escape' && (EDIT.sel || EDIT.pick)) { EDIT.sel = null; EDIT.pick = null; EDIT.toast = ''; rerenderWeek(); } }
@@ -3233,18 +3576,27 @@ function start() {
   }).observe(document.body, { childList: true, subtree: true });
   if (document.body) watchToasts(); else document.addEventListener('DOMContentLoaded', watchToasts);
   // coming back to a tab left open for hours: numbers follow the clock and any moves made elsewhere
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  let hiddenAt = null;
+  document.addEventListener('visibilitychange', () => { if (document.hidden) hiddenAt = new Date(); else if (refreshOnShow(hiddenAt, new Date())) refresh(); });
   // the per-day cells are pinned to the header's pixel widths, so a resize needs a re-render
-  window.addEventListener('resize', () => { const root = document.querySelector(SEL.rosterRoot); if (root) { removeOwn(root, 'perday'); schedule(); } });
+  // 1.5.0: the matchup tables are placed by measuring (inline, or the full-width block on phones), so a resize rebuilds them too
+  // 1.5.0: a phone fires resize whenever its URL bar shows or hides; only a width change matters here
+  let lastWidth = window.innerWidth;
+  window.addEventListener('resize', () => {
+    if (window.innerWidth === lastWidth) return;
+    lastWidth = window.innerWidth;
+    const root = document.querySelector(SEL.rosterRoot); if (root) { removeOwn(root, 'perday'); removeOwn(root, 'strip'); schedule(); }   // 1.5.0: the strip's layout follows the width too
+    const mine = document.querySelectorAll('[data-fgt="mblock"], [data-fgt="matchup"]'); if (mine.length) { for (const n of mine) n.remove(); schedule(); }
+  });
   schedule();
 }
 
 // ---------------------------------------------------------------- exports / start-up
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
+  module.exports = { blockHoldsTeams, afterWeekRender, REFRESH_HIDDEN_MS, refreshOnShow, touchUI, weekScrollChoice, daysShown, restoreScroll, phoneLayout, WEEK_CSS, PHONE_LANDSCAPE_MQ, badgeOverlap, keptScroll, snapDelta, tapReason, dockOptionTap, todayScrollLeft, defaultWeekView, tooWide, fitTable, matchupNeedsBlock, teamScope, INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, planChunks, applyDayStatuses, statusLabel, statusShort,
-    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameLinkIn, posTeamKey, headshotId, OPEN_NONE, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, overList, fpgShort, fpgHeader, dayHeadLine, shortTime, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
+    compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameLinkIn, posTeamKey, headshotId, OPEN_NONE, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, overList, fpgShort, fpgHeader, dayHeadLine, shortTime, fpGameText, isLive, teamOfRow, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, reuseSchedule, SCHEDULE_REUSE_MS, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates, parseSeasonStats, parseRosterLimits, ownTeamId, isOwnTeam, isDailyLineups, loadEditExtras, fieldMapFromLineup, interpretResponse, lineupMsg, saveDay, saveAll };
 }
 if (typeof document !== 'undefined') { try { start(); } catch (e) { console.warn(LOG, 'start failed', e); } }
