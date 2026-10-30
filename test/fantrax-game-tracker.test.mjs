@@ -978,6 +978,17 @@ test('loadTeam: a player in a covered day\'s lineup but missing from the 30-day 
   await T.loadTeam('abc', { teamId: null, period: 1, day: null }, g, NOW_PRESEASON);
   assert.equal(g.calls.filter(c => c.data.view === 'SCHEDULE_PERIOD').length, 0, 'everyone in the 30-day schedule: no extra call');
 });
+test('loadTeam: a player the 30-day schedule still lists but no lineup day of the period names is not on the team', async () => {
+  // live 2026-10-30: Ellis dropped for Gridin; SCHEDULE_FULL still listed Ellis, so next period read "On OFF-LINEUP, no longer
+  // OFF-LINEUP-eligible: C. Ellis ... the roster is illegal" although Fantrax's own lineups for every day had dropped him
+  const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay(n <= 2 ? { S: '1', Kept: '1' } : { S: '1' });
+  const f = fakeFetch(Object.assign({ GAMES_PER_POS: gamesPerPos(), SCHEDULE_FULL: scheduleFrom('2026-09-29', 30, {
+    S: { games: { '2026-10-02': 'Fri 7:00PM' } }, Ellis: { games: { '2026-10-02': 'Fri 7:00PM', '2026-10-03': 'Sat 6:00PM' } },
+    Kept: { games: { '2026-09-30': 'Wed 7:00PM', '2026-10-03': 'Sat 6:00PM' } } }) }, stats));
+  const t = await T.loadTeam('abc', { teamId: null, period: 1, day: null }, f, NOW_PRESEASON);
+  assert.deepEqual(t.groups.skaters.rows.map(r => r.id), ['id-S', 'id-Kept'], 'Ellis is on no lineup day: no row; Kept was on the team part of the period');
+  assert.deepEqual(T.offLineup(t, NOW_PRESEASON), []);
+});
 // ---- 1.4.0 save speed (2026-10-18) ----
 test('loadTeam: a period that began before today asks its first day\'s 7-day schedule alongside the 30-day one, once', async () => {
   const stats = {}; for (let n = 1; n <= 6; n++) stats['STATS@' + n] = statsDay({ S: '1' });

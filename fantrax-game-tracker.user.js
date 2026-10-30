@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.5.0
+// @version      1.5.1
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -61,6 +61,8 @@
  *        fantasy points ("@DET 6.75 FP", a red dot while it is live; a reserve or IR game shows the opponent only) instead
  *        of the score; on the roster page the return-date setting is a "Return dates" chip in the Week panel's header;
  *        returning to the tab re-pulls only after 2 minutes away or on a new day.
+ * 1.5.1: a player just dropped no longer shows in a later period as "On OFF-LINEUP, no longer OFF-LINEUP-eligible ... the
+ *        roster is illegal": Fantrax's 30-day schedule still lists him for a while, but no lineup day of the period does.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -1645,6 +1647,10 @@ async function loadTeam(leagueId, { teamId, period, day, profiles }, fetchImpl, 
       for (const gm of r.games) if (gm.day >= from && gm.day <= until && (!covered.has(gm.day) || !inFull.has(r.id)) && !target.games.some(x => x.day === gm.day)) target.games.push(gm);
     }
   });
+  // 1.5.1: the 30-day schedule lags a drop as it lags an add (2026-10-30: Ellis, dropped, was still in it next period and read as stuck in
+  // an off-lineup slot, "the roster is illegal"). Every day of the period has its lineup, so a player none of them names is not on the team.
+  const listed = new Set(lineupDays.flatMap(d => Object.keys(statusByDay[d] || {})));
+  for (const group of ['skaters', 'goalies']) rows[group] = rows[group].filter(r => listed.has(r.id));
   for (const group of ['skaters', 'goalies']) for (const r of rows[group]) r.games.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
   return { teamId: g.teamId, teamName: g.teamName, ownTeam: g.ownTeam, period: p, seasonStartDay: start, lineups, statusNames,
     schedule, rosterKey, scheduleAt: reuse ? reuse.at : fetchedAt, groups: {
