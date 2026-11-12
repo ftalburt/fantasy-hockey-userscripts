@@ -555,7 +555,8 @@ test('suggestions fills open slots best FP/G first and stops at the games max (c
   assert.deepEqual(r.moves, [{ in: 'l5', out: 'l3' }, { in: 'c5', out: 'c4' }]);
   assert.deepEqual(r.capped, ['g3', 'r5']);
   assert.deepEqual(r.stuck, ['d10']);
-  assert.equal(r.msg, '2 moves on Thu 10/8. Stopped at the games max: Hugo Barre, Sam Ortiz also play. Ben Roy still needs a manual swap.');
+  assert.equal(r.msg, '2 moves on Thu 10/8. Stopped at the games max: Hugo Barre, Sam Ortiz also play. Ben Roy still needs a manual swap.' +
+    ' Moves Ryan Kask (tagged Out), Owen Baird (tagged Out) to reserve: if they play, click "He plays" above first.');   // 1.5.2
   assert.equal(overSize(M, ls.map((L, i) => i === 3 ? r.L : L)), overSize(M, ls));
   // open slots are used before anyone is swapped out
   const open = ls.map(clone); open[3].s[open[3].s.indexOf('c4')] = null;

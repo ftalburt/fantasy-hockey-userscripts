@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fantrax Game Tracker
 // @namespace    http://ftalburt.com/
-// @version      1.5.1
+// @version      1.5.2
 // @description  Games played vs the games-played cap, plus a per-day week view of your lineup, on Fantrax matchup and roster pages, optionally counting from Fantrax's expected return dates; edit your own lineups from the Week panel
 // @author       Forrest Talburt
 // @match        https://www.fantrax.com/fantasy/league/*
@@ -63,6 +63,11 @@
  *        returning to the tab re-pulls only after 2 minutes away or on a new day.
  * 1.5.1: a player just dropped no longer shows in a later period as "On OFF-LINEUP, no longer OFF-LINEUP-eligible ... the
  *        roster is illegal": Fantrax's 30-day schedule still lists him for a while, but no lineup day of the period does.
+ * 1.5.2: a player held out only by Fantrax's injury tag (Out / IR tag, not suspended) can be started from the Grid when the news
+ *        runs ahead of the tag ("Fantrax lists him out until 11/21 · you say he plays"); from that day to the period's end his
+ *        games count, Fill and swaps leave him in, "start +N" offers his other games, and he leaves the return-date lines.
+ *        Each browser keeps its own "he plays": a tagged player saved active whose games this browser doesn't count gets a
+ *        line in the Week panel with a one-click "He plays", and Fill says when it moves a tagged player to reserve.
  */
 
 // ---------------------------------------------------------------- logic: constants
@@ -347,7 +352,26 @@ function isPending(game, today) {
 function effectiveReturnDate(row, today) { return row.returnDate && row.returnDate >= today ? row.returnDate : null; }
 // Does this game count (lineup status aside)? Off: healthy rows only, as in 1.2.1. On: a flagged row with a date counts
 // from that date (Out / IR / Suspended gain their later games, Day-to-day loses the earlier ones); no date → as off.
+// 1.5.2: opts.plays = {playerId: {from, until}}: the user started him in spite of his injury tag ("you say he plays"), so his games
+// from `from` to `until` count as a healthy player's. Never for a suspended player (a suspension is not news running ahead of a tag).
+function playsOverride(row, game, opts) {
+  const o = opts && opts.plays && row && row.injured && row.flag !== 'susp' ? opts.plays[row.id] : null;
+  return !!o && game.day >= o.from && game.day <= o.until;
+}
+// Stored overrides (PLAYS_KEY): this league's entries whose period has not ended; addPlay keeps an earlier start day.
+function livePlays(all, leagueId, today) {
+  const lg = (all && all[leagueId]) || {}, out = {};
+  for (const id of Object.keys(lg)) if (lg[id] && lg[id].until >= today) out[id] = { from: lg[id].from, until: lg[id].until };
+  return out;
+}
+function addPlay(all, leagueId, id, from, until) {
+  const next = Object.assign({}, all || {}), lg = Object.assign({}, next[leagueId] || {}), old = lg[id];
+  lg[id] = { from: old && old.until >= from && old.from < from ? old.from : from, until };
+  next[leagueId] = lg;
+  return next;
+}
 function countsGame(row, game, today, opts) {
+  if (playsOverride(row, game, opts)) return true;
   if (!opts || !opts.returnDates) return !row.injured;
   const date = effectiveReturnDate(row, today);
   return date ? game.day >= date : !row.injured;
@@ -420,10 +444,10 @@ function formatStatus(s) {
 // (active and reserve days; ir never), bench = every counted game falls on a reserve day, reason only when delta is 0.
 const FLAG_WORD = { out: 'Out', ir: 'IR', susp: 'Suspended', dtd: 'DTD' };
 function shortDate(day) { const [, m, d] = day.split('-').map(Number); return m + '/' + d; }
-function explainGroup(group, period, now) {
+function explainGroup(group, period, now, plays) {
   const today = dayString(now), days = new Set(period.days), out = [];
   for (const row of group.rows) {
-    if (!row.flag) continue;
+    if (!row.flag || (plays && row.flag !== 'susp' && plays[row.id])) continue;   // 1.5.2: you said he plays: the option changes nothing for him
     const games = row.games.filter(g => days.has(g.day) && (g.status === 'active' || g.status === 'reserve') && isPending(g, today, now));
     if (!games.length) continue;
     const on = games.filter(g => countsGame(row, g, today, { returnDates: true })), off = games.filter(g => countsGame(row, g, today, {}));
@@ -442,8 +466,8 @@ function explainGroup(group, period, now) {
   }
   return out;
 }
-function explainTeam(team, now) {
-  const all = explainGroup(team.groups.skaters, team.period, now).concat(explainGroup(team.groups.goalies, team.period, now).map(e => Object.assign(e, { goalie: true })));
+function explainTeam(team, now, plays) {
+  const all = explainGroup(team.groups.skaters, team.period, now, plays).concat(explainGroup(team.groups.goalies, team.period, now, plays).map(e => Object.assign(e, { goalie: true })));
   return { gained: all.filter(e => e.delta > 0), lost: all.filter(e => e.delta < 0), none: all.filter(e => e.delta === 0) };
 }
 function formatEffect(e) {
@@ -1043,7 +1067,49 @@ function planClick(M, di, L, id) {
   const s = N.s.indexOf(id);
   if (s >= 0) { N.s[s] = null; return { k: 'move', L: N, text: 'Click: to reserve (his ' + d.slots[s].pos + ' slot opens)' }; }
   // 2026-10-18 (user): starting a reserve player whose game would not count gains nothing (and bumped someone)
-  if (!counted(M, di, id)) return { k: 'none', text: gameOn(M, di, id) ? 'His game ' + d.label + " won't count: nothing to gain" : 'No game ' + d.label + ': nothing to start' };
+  // 1.5.2 (user, 2026-11-11, Terry tagged out to 11/21 the day news had him playing): unless only his injury tag stands in the way:
+  // he starts, and the click records "he plays" (pl.plays) so his games count from that day.
+  const anyway = !counted(M, di, id) && tagOnly(M, di, id);
+  if (!counted(M, di, id) && !anyway) return { k: 'none', text: gameOn(M, di, id) ? 'His game ' + d.label + " won't count: nothing to gain" : 'No game ' + d.label + ': nothing to start' };
+  const r = planStart(M, di, L, N, id);
+  return anyway && r.k !== 'none' ? Object.assign(r, { plays: id, text: r.text + ' · ' + tagNote(M, id) }) : r;
+}
+// 1.5.2: his only blocker is the injury tag: a pending game, Out / IR-tagged (not suspended), not locked.
+function tagOnly(M, di, id) {
+  const g = gameOn(M, di, id), row = M.players[id].row;
+  return !!g && !!row && row.injured && row.flag !== 'susp' && isPending(g, M.today) && !locked(M, di, id);
+}
+function tagNote(M, id) {
+  const row = M.players[id].row, date = row && effectiveReturnDate(row, M.today);
+  return 'Fantrax lists him out' + (date ? ' until ' + dayLabel(date).split(' ')[1] : '') + ' · you say he plays';
+}
+// 1.5.2 (user, 2026-11-11: phone and desktop): the override lives in this browser only. A tagged player (Out / IR tag, not suspended)
+// active in the shown lineups on a pending, unlocked game this browser does not count: started on another device, or left active by
+// mistake. The panel names him with a one-click "He plays" (claimPlay). → [{id, name, days: [di]}] in roster order.
+function unclaimedStarts(M, lineups) {
+  const out = [];
+  for (const id of M.order) {
+    const days = [];
+    M.days.forEach((d, di) => { if (d.slots && lineups[di] && lineups[di].s.includes(id) && tagOnly(M, di, id) && !counted(M, di, id)) days.push(di); });
+    if (days.length) out.push({ id, name: M.players[id].name, days });
+  }
+  return out;
+}
+function unclaimedText(M, u) {
+  const row = M.players[u.id].row, date = row && effectiveReturnDate(row, M.today);
+  return u.name + ' is tagged ' + (FLAG_WORD[row && row.flag] || 'Out') + (date ? ' until ' + dayLabel(date).split(' ')[1] : '') + ' but active ' +
+    u.days.map(di => M.days[di].label.split(' ')[0]).join(', ') + ": those games aren't counted in this browser.";
+}
+// Fill benches a starter whose game does not count; when that is a tagged player, say so (he may be one you meant to play).
+function taggedBenchNote(M, moves) {
+  const names = [...new Set(moves.filter(m => m.out && M.players[m.out] && M.players[m.out].row && M.players[m.out].row.injured && M.players[m.out].row.flag !== 'susp').map(m => m.out))]
+    .map(id => M.players[id].name + ' (tagged ' + (FLAG_WORD[M.players[id].row.flag] || 'Out') + ')');
+  if (!names.length) return '';
+  return ' Moves ' + names.join(', ') + ' to reserve: if ' + (names.length > 1 ? 'they play' : 'he plays') + ', click "He plays" above first.';
+}
+// The start part of planClick: seat; else swap out a player who is not counted; else ask which one sits.
+function planStart(M, di, L, N, id) {
+  const d = M.days[di];
   const a0 = seat(M, di, N.s, id), a = a0 && arrange(M, di, { s: a0, ir: N.ir });
   const shift = s2 => s2.some((x, i) => x !== null && x !== L.s[i] && x !== id) ? ' (others shift slots)' : '';
   if (a) { N.s = a; return { k: 'move', L: N, text: 'Click: starts in ' + d.slots[a.indexOf(id)].pos + shift(a) }; }
@@ -1151,7 +1217,7 @@ function suggestions(M, lineups, di) {
   }
   res.msg = plural(res.moves.length, 'move') + ' on ' + M.days[di].label + '.' +
     (res.capped.length ? ' Stopped at the games max: ' + res.capped.map(nm).join(', ') + ' also play' + (res.capped.length > 1 ? '' : 's') + '.' : '') +
-    (res.stuck.length ? ' ' + res.stuck.map(nm).join(', ') + (res.stuck.length > 1 ? ' still need' : ' still needs') + ' a manual swap.' : '');
+    (res.stuck.length ? ' ' + res.stuck.map(nm).join(', ') + (res.stuck.length > 1 ? ' still need' : ' still needs') + ' a manual swap.' : '') + taggedBenchNote(M, res.moves);
   return res;
 }
 // Fill every day: every bench game of the week competes for the room, best FP/G first, then the earlier day. → NEW lineups.
@@ -1168,7 +1234,7 @@ function fillWeek(M, lineups) {
   }
   res.msg = plural(res.moves.length, 'move') + ' across the week.' +
     (res.capped.length ? ' Stopped at the games max; also playing: ' + res.capped.join(', ') + '.' : '') +
-    (res.stuck.length ? ' Need a manual swap: ' + res.stuck.join(', ') + '.' : '');
+    (res.stuck.length ? ' Need a manual swap: ' + res.stuck.join(', ') + '.' : '') + taggedBenchNote(M, res.moves);
   return res;
 }
 
@@ -1916,8 +1982,8 @@ function revealTap(span, text) {
 // a footer lists every flagged player by effect (gained / lost / no change), each name carrying Fantrax's text on hover.
 const RET_COLOR = '#c4b5fd';
 const EFFECT_LINES = [['gained', 'Counted from the date:', RET_COLOR], ['lost', 'Day-to-day, not counted before the date:', COLORS.unused], ['none', 'No change:', '#8b93a7']];
-function buildEffectLines(team, now) {
-  const x = explainTeam(team, now), lines = [];
+function buildEffectLines(team, now, plays) {
+  const x = explainTeam(team, now, plays), lines = [];
   for (const [group, heading, color] of EFFECT_LINES) {
     if (!x[group].length) continue;
     const kids = [el('span', { style: 'color:#7c8497;margin-right:6px', text: heading })];
@@ -1958,7 +2024,7 @@ function buildTable(kind, key, team, now, opts, narrow = false) {
     return [el('tr', {}, nums.concat([el('td', { style: 'padding:1px 6px;text-align:left;white-space:nowrap;color:' + color, text: formatStatus(r.status) })]))];
   });
   const parts = [head].concat(rows);
-  const lines = (on ? buildEffectLines(team, now) : []).concat(buildOffLines(team, now, opts));
+  const lines = (on ? buildEffectLines(team, now, opts && opts.plays) : []).concat(buildOffLines(team, now, opts));
   if (lines.length) parts.push(el('tr', {}, [el('td', { colspan: String(cols), style: 'padding:3px 6px 1px;font:11px/1.5 sans-serif;white-space:normal;text-align:left' }, lines)]));
   return el('table', { 'data-fgt': kind, 'data-fgt-key': key, style: 'font:12px/1.4 sans-serif;border-collapse:collapse;margin:4px 0;color:#e5e7eb' }, parts);
 }
@@ -1989,7 +2055,7 @@ function finishUpdate(container, kind, insert) { removeOwn(container, kind); ins
 // 1.3.0: after a (cached) team load, read the option as of now and attach the return dates when it is on.
 function withDates(leagueId) {
   return team => {
-    const opts = { returnDates: returnDatesOn() };
+    const opts = { returnDates: returnDatesOn(), plays: playsFor(leagueId) };
     return (opts.returnDates ? withReturnDates(leagueId, team, undefined, new Date()) : Promise.resolve(team)).then(t => ({ team: t, opts }));
   };
 }
@@ -2431,6 +2497,16 @@ function setWeekCollapsed(v) { try { localStorage.setItem(WEEK_COLLAPSED_KEY, v 
 
 // ---- 1.3.0: the "count from the expected return date" option, one setting for the whole script
 const RETURN_DATES_KEY = 'fgt-return-dates';
+// 1.5.2: "he plays" overrides, {leagueId: {playerId: {from, until}}}; `until` = the end of the period he was started in.
+const PLAYS_KEY = 'fgt-plays';
+function readPlays() { try { return JSON.parse(localStorage.getItem(PLAYS_KEY) || '{}') || {}; } catch (e) { return {}; } }
+function playsFor(leagueId) { return livePlays(readPlays(), leagueId, dayString(new Date())); }
+function rememberPlay(leagueId, id, from, until) {
+  const all = addPlay(readPlays(), leagueId, id, from, until), today = dayString(new Date());
+  for (const lg of Object.keys(all)) { all[lg] = livePlays(all, lg, today); if (!Object.keys(all[lg]).length) delete all[lg]; }
+  try { localStorage.setItem(PLAYS_KEY, JSON.stringify(all)); } catch (e) { /* storage off: the override lasts this page only */ }
+  return all[leagueId] || {};
+}
 function returnDatesOn() { try { return localStorage.getItem(RETURN_DATES_KEY) === '1'; } catch (e) { return false; } }
 function setReturnDatesOn(v) { try { localStorage.setItem(RETURN_DATES_KEY, v ? '1' : '0'); } catch (e) { /* private mode */ } }
 const RETURN_LABEL = 'Count players from their Fantrax expected return date';
@@ -2844,7 +2920,7 @@ function discardDay(di) {
 // 2026-10-18: it keeps the return dates and reuses the panel's schedule answers (reuseSchedule: same roster, at most 10 minutes old).
 function freshTeam(route, team, now) {
   clearCache({ keepProfiles: true }); reuseSchedule(route.leagueId, team);
-  const opts = { returnDates: returnDatesOn() };
+  const opts = { returnDates: returnDatesOn(), plays: playsFor(route.leagueId) };
   return cachedLoadTeam(route.leagueId, { teamId: route.teamId, period: team.period.id, day: null, profiles: opts.returnDates }, undefined, now)
     .then(t => (opts.returnDates ? withReturnDates(route.leagueId, t, undefined, now) : t)).then(t => ({ team: t, opts }));
 }
@@ -3195,8 +3271,8 @@ function gridCellClick(di, id) {
     EDIT.pick = null; return rerenderWeek();
   }
   const pl = planClick(M, di, L, id), nm = M.players[id].name + ' · ' + shortDay(M, di) + ': ';
-  if (pl.k === 'move') return applyEdit(di, pl.L, clickToast(M, EDIT.lineups, di, id, pl));
-  if (pl.k === 'pick') EDIT.pick = { di, id, opts: pl.opts }; else EDIT.toast = pl.text + '.';
+  if (pl.k === 'move') { const t = clickToast(M, EDIT.lineups, di, id, pl); notePlays(pl, di); return applyEdit(di, pl.L, t); }
+  if (pl.k === 'pick') EDIT.pick = { di, id, opts: pl.opts, plays: pl.plays }; else EDIT.toast = pl.text + '.';
   rerenderWeek();
 }
 // 2026-10-18: while "who sits?" is open, the cells of the players who could sit are targets; a click on one makes that swap.
@@ -3206,11 +3282,31 @@ function pickTarget(pick, di, id) { return pick && pick.di === di && pick.opts.f
 // starter to reserve, others shifting slots, a pairing into IR) or put a group past its games max.
 function clickToast(M, lineups, di, id, pl) {
   const next = lineups.map((L, i) => i === di ? pl.L : L), over = overNote(M, lineups, next, isGoalie(M, id) ? 'goalies' : 'skaters');
-  const side = pl.out || /others shift|into IR/.test(pl.text) ? M.players[id].name + ' · ' + shortDay(M, di) + ': ' + pl.text.replace('Click: ', '') + '.' : '';
+  const side = pl.out || pl.plays || /others shift|into IR/.test(pl.text) ? M.players[id].name + ' · ' + shortDay(M, di) + ': ' + pl.text.replace('Click: ', '') + '.' : '';
   return [side, over ? '⚠ ' + over : ''].filter(Boolean).join(' ');
 }
+// 1.5.2: a start "in spite of the tag" records the override and rebuilds the model, so his games count from that day on.
+function notePlays(pl, di) {
+  if (!pl.plays || !EDIT.route) return;
+  const M = EDIT.model, plays = rememberPlay(EDIT.route.leagueId, pl.plays, M.days[di].day, M.days[M.days.length - 1].day);
+  EDIT.opts = Object.assign({}, EDIT.opts, { plays }); rebuildModel();
+}
+// The panel's "He plays" lines: own team only, from the lineups the body draws (Fantrax's while not editing).
+function unclaimedShown() {
+  const E = EDIT;
+  if (!E.model || !E.route || !E.team || ownTeamState(E.team, E.route, OWN_TEAMS[E.route.leagueId]) !== 'own') return [];
+  return unclaimedStarts(E.model, E.editing ? E.lineups : baseOf(E.model));
+}
+function claimPlay(u) {
+  if (!EDIT.route) return;
+  const M = EDIT.model, plays = rememberPlay(EDIT.route.leagueId, u.id, M.days[u.days[0]].day, M.days[M.days.length - 1].day);
+  EDIT.opts = Object.assign({}, EDIT.opts, { plays }); rebuildModel();
+  EDIT.toast = u.name + ': counted from ' + dayName(M, u.days[0]) + ' in this browser.'; rerenderWeek();
+}
 function gridPick(o) {
-  const { di, id } = EDIT.pick, M = EDIT.model, L = EDIT.lineups[di];
+  const { di, id } = EDIT.pick;
+  notePlays(EDIT.pick, di);
+  const M = EDIT.model, L = EDIT.lineups[di];
   const L2 = { s: o.s, ir: L.ir.filter(x => x !== id) }, over = overNote(M, EDIT.lineups, EDIT.lineups.map((x, i) => i === di ? L2 : x), isGoalie(M, id) ? 'goalies' : 'skaters');
   applyEdit(di, L2, over ? '⚠ ' + over : '');   // the swap the user chose is on screen: only a games-max overflow is worth saying
 }
@@ -3396,6 +3492,8 @@ function buildWeekPanel() {
     kids.push(buildMeter());
     // the IR-eligibility banner also read-only, from the lineups the read-only body draws (mock parity #4)
     for (const b of banners(EDIT.model, EDIT.editing ? EDIT.lineups : baseOf(EDIT.model), EDIT.results, EDIT.editing)) kids.push(el('div', { class: 'fgt-banner', text: b }));
+    for (const u of unclaimedShown()) kids.push(el('div', { class: 'fgt-banner', 'data-fgt-unclaimed': u.id }, [unclaimedText(EDIT.model, u) + ' ',
+      btn('He plays', '', () => claimPlay(u), { title: 'Count his games from ' + dayName(EDIT.model, u.days[0]) + " to the period's end, in this browser (each browser keeps its own)" })]));
     const pend = buildPendingBar(); if (pend) kids.push(pend);
     // 2026-10-18: save bar, then the toast, then the prompt bar (dock) and the body, then the legend: what a click did and what to
     // answer next sit right above the grid (was: body, toast, save bar, legend)
@@ -3600,7 +3698,7 @@ function start() {
 // ---------------------------------------------------------------- exports / start-up
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { blockHoldsTeams, afterWeekRender, REFRESH_HIDDEN_MS, refreshOnShow, touchUI, weekScrollChoice, daysShown, restoreScroll, phoneLayout, WEEK_CSS, PHONE_LANDSCAPE_MQ, badgeOverlap, keptScroll, snapDelta, tapReason, dockOptionTap, todayScrollLeft, defaultWeekView, tooWide, fitTable, matchupNeedsBlock, teamScope, INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
+  module.exports = { unclaimedStarts, unclaimedText, taggedBenchNote, livePlays, addPlay, tagOnly, playsOverride, blockHoldsTeams, afterWeekRender, REFRESH_HIDDEN_MS, refreshOnShow, touchUI, weekScrollChoice, daysShown, restoreScroll, phoneLayout, WEEK_CSS, PHONE_LANDSCAPE_MQ, badgeOverlap, keptScroll, snapDelta, tapReason, dockOptionTap, todayScrollLeft, defaultWeekView, tooWide, fitTable, matchupNeedsBlock, teamScope, INJURY_ICON_TYPES, FLAG_BY_ICON, GROUP_BY_SC, STATUS_BY_ID, dayString, periodDays, addDays, dayFromIndex, indexFromDay, seasonStart, periodForDay, dayLabel,
     parsePeriodList, parseGamesPerPos, isStartedCell, parseStart, parseGameText, iconTag, rowFlag, parseReturnDate, parseScheduleRows, coveredDays, parseDayStatuses, parseDayLineup, planChunks, applyDayStatuses, statusLabel, statusShort,
     compute, missingStatsDays, formatStatus, isPending, activeGame, activeTitle, effectiveReturnDate, countsGame, explainGroup, explainTeam, formatEffect, offLineup, formatOffLineup, offSections, weekView, buildEditModel, cloneLineup, onRoster, fits, irEligible, irIneligibleKnown, dockOptions, dockQuestion, openOption, nameLinkIn, posTeamKey, headshotId, OPEN_NONE, rebuildNote, gameLine, hasGame, locked, dayLocked, lockWhy, counted, isGoalie, where, bench, fieldMapOf, sameFieldMap, lineupFromFieldMap, changes, seat, arrange, swapsFor, rosterCount, fitRoster, dayErrors, dayWarnings, gameLedger, targetsFor, computeMove, moveKind, planClick, toIR, allGamesPlan, allGamesPill, autoDismissMs, clickToast, saveLabel, saveBarView, gridCellText, legendSpec, extrasRefreshWanted, pendingBarReason, pickTip, startEditing, isWholeSeason, latestGate, pickTarget, ownTeamState, autoEditWanted, statsWanted, saveBarShown, pendingBarShown, overNote, overList, fpgShort, fpgHeader, dayHeadLine, shortTime, fpGameText, isLive, teamOfRow, rankFpg, fpgText, byFpg, suggestions, fillWeek, withoutLockedMoves, savePlan, saveRequests, keepLastShown, dayHref, meterView, meterLineups, dayHeadView, columnBench, benchGame, offRowNote, columnRows, gridCell, gameTag, rosterTags, previewDiff, reviewView, banners, playerName, saveClick, EDIT, syncEdit, pendingCount, editPaused, pendingKey, pendingFrom, reapply, loadPending, savePending, clearPendingDays, shouldRender, isCurrent, rosterKey, parseRoute, renderPerDay,
     api, apiMulti, loadTeam, cachedLoadTeam, clearCache, reuseSchedule, SCHEDULE_REUSE_MS, RETURN_DATES_KEY, returnDatesOn, setReturnDatesOn, PROFILE_TTL_MS, profileMsg, loadReturnTexts, withReturnDates, parseSeasonStats, parseRosterLimits, ownTeamId, isOwnTeam, isDailyLineups, loadEditExtras, fieldMapFromLineup, interpretResponse, lineupMsg, saveDay, saveAll };
